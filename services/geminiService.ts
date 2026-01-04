@@ -690,7 +690,7 @@ export const generateCinematicScene = async (prompt: string, duration: number, s
     TECHNICAL BOILERPLATE:
     - Use standard Three.js imports (module based).
     - Setup Scene, Camera, Renderer (antialias: true).
-    - **FULLSCREEN**: Canvas must be 100vw/100vh. Handle resize.
+    - **FULLSCREEN CANVAS**: Canvas must be 100vw/100vh. Handle resize.
     - \`document.body.appendChild(renderer.domElement)\`.
     - CSS: \`<style>body{margin:0;overflow:hidden;background:#000;}</style>\`.
     - **NO ORBIT CONTROLS**: The camera movement must be PROCEDURAL/SCRIPTED by you (the director), not user controlled.
