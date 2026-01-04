@@ -1,12 +1,12 @@
 import React from 'react';
-import { useAuth } from '../contexts/AuthContext';
+import { useGlobalStore } from '../stores/globalStore';
 
 interface HeaderProps {
   subtitle?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({ subtitle = "Ecom Image Designer" }) => {
-  const { user, logout } = useAuth();
+  const { user, logout } = useGlobalStore();
 
   return (
     <header className="w-full py-6 px-4 md:px-8 border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
@@ -27,13 +27,14 @@ export const Header: React.FC<HeaderProps> = ({ subtitle = "Ecom Image Designer"
         
         <div className="flex flex-col items-end">
           <div className="flex items-center gap-4">
-             <div className="hidden sm:flex flex-col items-end text-xs font-medium text-slate-500">
-                <span>Powered by Gemini 2.5</span>
-                <span className="text-emerald-500/80">+ Robotics 1.5 Preview</span>
-             </div>
-             
              {user && (
                  <div className="flex items-center gap-3 pl-4 border-l border-slate-800">
+                    {/* Simulated Cloud Sync Status */}
+                    <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 rounded-full border border-emerald-500/20">
+                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                        <span className="text-[10px] font-medium text-emerald-400">Cloud Sync Active</span>
+                    </div>
+
                     <div className="text-right hidden sm:block">
                         <div className="text-sm font-bold text-white">{user.name}</div>
                         <div className="text-[10px] text-slate-400">{user.email}</div>

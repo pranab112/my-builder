@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { AuthProvider, useAuth } from './contexts/AuthContext';
+import React, { useState, useEffect } from 'react';
+import { useGlobalStore } from './stores/globalStore';
 import { Header } from './components/Header';
 import { ImageDesigner } from './components/ImageDesigner';
 import { AnimationMaker } from './components/AnimationMaker';
@@ -12,24 +12,27 @@ type Section = 'landing' | 'designer' | 'animation' | 'motion' | 'movie';
 
 const ProShotApp: React.FC = () => {
   const [activeSection, setActiveSection] = useState<Section>('landing');
-  const { user, isLoading } = useAuth();
+  const { user, isAuthLoading, initAuth } = useGlobalStore();
 
-  if (isLoading) {
-    return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500">Loading ProShot AI...</div>;
+  useEffect(() => {
+    initAuth();
+  }, []);
+
+  if (isAuthLoading) {
+    return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500 animate-pulse">Initializing Backend...</div>;
   }
 
-  // 1. If we are on the landing page, show it regardless of auth status
+  // 1. Landing Page
   if (activeSection === 'landing') {
       return <LandingPage onNavigate={setActiveSection} />;
   }
 
-  // 2. If we are NOT on landing page, and NOT logged in, show Auth Page
-  // We pass `setActiveSection('landing')` so the user can go back if they don't want to login
+  // 2. Auth Guard
   if (!user) {
     return <AuthPage onBack={() => setActiveSection('landing')} />;
   }
 
-  // 3. If Logged in and NOT on landing page, show the App Shell
+  // 3. App Shell
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       <div className="sticky top-0 z-50">
@@ -50,7 +53,6 @@ const ProShotApp: React.FC = () => {
       {/* Navigation Tabs */}
       <div className="w-full border-b border-slate-800 bg-slate-900/30 sticky top-[89px] z-40 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 md:px-8 flex items-center gap-4">
-            {/* Back to Home Button */}
             <button 
                 onClick={() => setActiveSection('landing')}
                 className="p-2 -ml-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
@@ -63,46 +65,10 @@ const ProShotApp: React.FC = () => {
             <div className="h-6 w-px bg-slate-800"></div>
             
             <div className="flex gap-8 overflow-x-auto scrollbar-hide flex-1">
-                <button
-                    onClick={() => setActiveSection('designer')}
-                    className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${
-                    activeSection === 'designer' 
-                    ? 'border-indigo-500 text-white' 
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                    }`}
-                >
-                    Image Designer
-                </button>
-                <button
-                    onClick={() => setActiveSection('animation')}
-                    className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${
-                    activeSection === 'animation' 
-                    ? 'border-emerald-500 text-white' 
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                    }`}
-                >
-                    3D Builder
-                </button>
-                <button
-                    onClick={() => setActiveSection('motion')}
-                    className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${
-                    activeSection === 'motion' 
-                    ? 'border-rose-500 text-white' 
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                    }`}
-                >
-                    Motion Studio
-                </button>
-                <button
-                    onClick={() => setActiveSection('movie')}
-                    className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${
-                    activeSection === 'movie' 
-                    ? 'border-purple-500 text-white' 
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                    }`}
-                >
-                    Movie Maker <span className="ml-1 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full border border-purple-500/30">Beta</span>
-                </button>
+                <button onClick={() => setActiveSection('designer')} className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${activeSection === 'designer' ? 'border-indigo-500 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>Image Designer</button>
+                <button onClick={() => setActiveSection('animation')} className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${activeSection === 'animation' ? 'border-emerald-500 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>3D Builder</button>
+                <button onClick={() => setActiveSection('motion')} className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${activeSection === 'motion' ? 'border-rose-500 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>Motion Studio</button>
+                <button onClick={() => setActiveSection('movie')} className={`py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap ${activeSection === 'movie' ? 'border-purple-500 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>Movie Maker <span className="ml-1 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full border border-purple-500/30">Beta</span></button>
             </div>
         </div>
       </div>
@@ -117,12 +83,4 @@ const ProShotApp: React.FC = () => {
   );
 };
 
-const App: React.FC = () => {
-  return (
-    <AuthProvider>
-      <ProShotApp />
-    </AuthProvider>
-  );
-};
-
-export default App;
+export default ProShotApp;

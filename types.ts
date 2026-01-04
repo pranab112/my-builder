@@ -7,11 +7,13 @@ export enum AspectRatio {
 }
 
 export type GenerationMode = 'auto' | 'manual';
+export type ImageResolution = '1K' | '2K' | '4K';
 
 export interface GenerationConfig {
   prompt: string;
   mode: GenerationMode;
   aspectRatio: AspectRatio;
+  resolution: ImageResolution;
   base64Images: string[];
 }
 

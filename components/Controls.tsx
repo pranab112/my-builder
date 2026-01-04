@@ -1,5 +1,5 @@
 import React from 'react';
-import { AspectRatio, GenerationMode } from '../types';
+import { AspectRatio, GenerationMode, ImageResolution } from '../types';
 
 interface ControlsProps {
   prompt: string;
@@ -8,6 +8,8 @@ interface ControlsProps {
   setMode: (m: GenerationMode) => void;
   aspectRatio: AspectRatio;
   setAspectRatio: (r: AspectRatio) => void;
+  resolution: ImageResolution;
+  setResolution: (r: ImageResolution) => void;
   onGenerate: () => void;
   isGenerating: boolean;
   hasImage: boolean;
@@ -20,6 +22,8 @@ export const Controls: React.FC<ControlsProps> = ({
   setMode,
   aspectRatio,
   setAspectRatio,
+  resolution,
+  setResolution,
   onGenerate,
   isGenerating,
   hasImage
@@ -31,6 +35,12 @@ export const Controls: React.FC<ControlsProps> = ({
     { label: 'Landscape (4:3)', value: AspectRatio.LANDSCAPE, icon: '▭' },
     { label: 'Wide (16:9)', value: AspectRatio.WIDE, icon: '▭' },
     { label: 'Tall (9:16)', value: AspectRatio.TALL, icon: '▯' },
+  ];
+
+  const resolutions: { label: string, value: ImageResolution, desc: string }[] = [
+    { label: 'Standard', value: '1K', desc: '1024px' },
+    { label: 'High', value: '2K', desc: '2048px' },
+    { label: 'Ultra', value: '4K', desc: '4096px' },
   ];
 
   return (
@@ -112,24 +122,52 @@ export const Controls: React.FC<ControlsProps> = ({
       <div>
         <h2 className="text-lg font-semibold text-slate-200 mb-4 flex items-center gap-2">
             <span className="w-6 h-6 rounded-full bg-slate-700 text-xs flex items-center justify-center">3</span>
-            Output Size
+            Output Settings
         </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {ratios.map((r) => (
-            <button
-              key={r.value}
-              onClick={() => setAspectRatio(r.value)}
-              className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all duration-200
-                ${aspectRatio === r.value
-                  ? 'bg-indigo-600/20 border-indigo-500 text-white'
-                  : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
-                }
-              `}
-            >
-              <span className="text-2xl mb-1 opacity-50">{r.icon}</span>
-              <span className="text-xs font-medium">{r.label}</span>
-            </button>
-          ))}
+        
+        {/* Aspect Ratio */}
+        <div className="mb-6">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 block">Aspect Ratio</label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {ratios.map((r) => (
+                <button
+                key={r.value}
+                onClick={() => setAspectRatio(r.value)}
+                className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all duration-200
+                    ${aspectRatio === r.value
+                    ? 'bg-indigo-600/20 border-indigo-500 text-white shadow-lg shadow-indigo-500/10'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                    }
+                `}
+                >
+                <span className="text-2xl mb-1 opacity-50">{r.icon}</span>
+                <span className="text-xs font-medium">{r.label}</span>
+                </button>
+            ))}
+            </div>
+        </div>
+
+        {/* Resolution / Size */}
+        <div>
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 block">Image Quality (Size)</label>
+            <div className="grid grid-cols-3 gap-3">
+                {resolutions.map((r) => (
+                    <button
+                        key={r.value}
+                        onClick={() => setResolution(r.value)}
+                        className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all duration-200 relative overflow-hidden
+                            ${resolution === r.value
+                                ? 'bg-indigo-600/20 border-indigo-500 text-white shadow-lg shadow-indigo-500/10'
+                                : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                            }
+                        `}
+                    >
+                        {r.value === '4K' && <div className="absolute top-0 right-0 px-1.5 py-0.5 bg-indigo-500 text-[8px] font-bold text-white rounded-bl-lg">PRO</div>}
+                        <span className="text-lg font-bold">{r.value}</span>
+                        <span className="text-[10px] opacity-60">{r.desc}</span>
+                    </button>
+                ))}
+            </div>
         </div>
       </div>
     </div>

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { ImageUpload } from './ImageUpload';
 import { Controls } from './Controls';
 import { Button } from './Button';
-import { AspectRatio, GenerationConfig } from '../types';
+import { AspectRatio, GenerationConfig, ImageResolution } from '../types';
 import { generateEcommerceImage, generateSceneDescription, analyzeProductIdentity } from '../services/geminiService';
 
 export const ImageDesigner: React.FC = () => {
@@ -10,6 +10,7 @@ export const ImageDesigner: React.FC = () => {
     prompt: '',
     mode: 'auto',
     aspectRatio: AspectRatio.SQUARE,
+    resolution: '1K',
     base64Images: [],
   });
   
@@ -33,6 +34,20 @@ export const ImageDesigner: React.FC = () => {
     if (config.mode === 'manual' && !config.prompt.trim()) {
       setError("Please describe the scene.");
       return;
+    }
+
+    // MANDATORY API KEY CHECK FOR PRO MODEL
+    if (window.aistudio) {
+        try {
+            const hasKey = await window.aistudio.hasSelectedApiKey();
+            if (!hasKey) {
+                await window.aistudio.openSelectKey();
+                // Assume success as per race condition mitigation instructions
+            }
+        } catch (e) {
+            console.error("API Key check failed", e);
+            // Proceed if check fails, assumption: env key might work or it's a dev environment
+        }
     }
 
     setIsGenerating(true);
@@ -67,7 +82,8 @@ export const ImageDesigner: React.FC = () => {
           productIdentity, 
           lockedSceneDescription, 
           angleInstruction, 
-          config.aspectRatio
+          config.aspectRatio,
+          config.resolution // Pass the selected resolution
         );
       });
 
@@ -131,6 +147,8 @@ export const ImageDesigner: React.FC = () => {
                 setMode={(m) => setConfig(prev => ({ ...prev, mode: m }))}
                 aspectRatio={config.aspectRatio}
                 setAspectRatio={(r) => setConfig(prev => ({ ...prev, aspectRatio: r }))}
+                resolution={config.resolution}
+                setResolution={(r) => setConfig(prev => ({ ...prev, resolution: r }))}
                 onGenerate={handleGenerate}
                 isGenerating={isGenerating}
                 hasImage={config.base64Images.length > 0}

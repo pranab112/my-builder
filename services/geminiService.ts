@@ -1,19 +1,13 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { AspectRatio } from "../types";
-
-const API_KEY = process.env.API_KEY || "";
+import { Type } from "@google/genai"; // Keep for Type definitions only
+import { AspectRatio, ImageResolution } from "../types";
+import { backend } from "./backend";
 
 export interface CategorySuggestion {
   title: string;
   description: string;
 }
 
-// ... (Keep existing analyzeProductIdentity function unchanged) ...
 export const analyzeProductIdentity = async (base64Images: string[]): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-  
   const systemPrompt = `
     You are a Geometric Product Analyst with a specialization in CMF (Color, Material, Finish).
     
@@ -54,7 +48,7 @@ export const analyzeProductIdentity = async (base64Images: string[]): Promise<st
   });
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await backend.ai.generateContent({
       model: 'gemini-3-pro-preview',
       contents: { parts },
       config: {
@@ -68,15 +62,11 @@ export const analyzeProductIdentity = async (base64Images: string[]): Promise<st
   }
 };
 
-// ... (Keep existing generateSceneDescription function unchanged) ...
 export const generateSceneDescription = async (
   base64Images: string[],
   productIdentity: string,
   userHint?: string
 ): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   const systemInstruction = `
     You are a Creative Director. Define a SINGLE, CONSISTENT studio environment.
     
@@ -100,7 +90,7 @@ export const generateSceneDescription = async (
   });
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await backend.ai.generateContent({
       model: 'gemini-3-pro-preview',
       contents: { parts },
       config: { 
@@ -114,18 +104,14 @@ export const generateSceneDescription = async (
   }
 };
 
-// ... (Keep existing generateEcommerceImage function unchanged) ...
 export const generateEcommerceImage = async (
   base64Images: string[],
   productIdentity: string,
   sceneDescription: string,
   angleInstruction: string,
-  aspectRatio: AspectRatio
+  aspectRatio: AspectRatio,
+  resolution: ImageResolution = '1K'
 ): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   const systemPrompt = `
     You are a 3D Product Photographer.
     
@@ -152,17 +138,18 @@ export const generateEcommerceImage = async (
   });
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
+    const response = await backend.ai.generateContent({
+      model: 'gemini-3-pro-image-preview', // Upgraded to Pro for imageSize support
       contents: { parts },
       config: { 
         imageConfig: { 
-          aspectRatio: aspectRatio
-          // imageSize not supported on 2.5-flash-image
+          aspectRatio: aspectRatio,
+          imageSize: resolution // Supports '1K', '2K', '4K'
         } 
       },
     });
 
+    // The backend proxy serializes the response.candidates structure
     const responseParts = response.candidates?.[0]?.content?.parts;
     let generatedImageBase64 = '';
 
@@ -184,14 +171,10 @@ export const generateEcommerceImage = async (
   }
 };
 
-// ... (Keep existing suggestProjectCategories function unchanged) ...
 export const suggestProjectCategories = async (description: string): Promise<CategorySuggestion[]> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview', // Flash is fine for simple categorization
+    const response = await backend.ai.generateContent({
+      model: 'gemini-3-flash-preview', 
       contents: `User wants to build: "${description}". 
       Suggest 3 distinct, professional Product Categories suitable for parametric design/selling.
       
@@ -217,7 +200,6 @@ export const suggestProjectCategories = async (description: string): Promise<Cat
 
     const suggestions = JSON.parse(response.text.trim());
     
-    // Add the default master category
     return [
       {
         title: "Parametric Design (Configurable)",
@@ -236,16 +218,12 @@ export const suggestProjectCategories = async (description: string): Promise<Cat
   }
 };
 
-// ... (Enhanced enhanceUserPrompt) ...
 export const enhanceUserPrompt = async (originalPrompt: string, category: string): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   if (!originalPrompt.trim()) return "";
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview', // Upgraded to Pro for better technical understanding
+    const response = await backend.ai.generateContent({
+      model: 'gemini-3-pro-preview',
       contents: `You are a Technical 3D Prompt Engineer.
       CONTEXT: The user is building a "${category}" 3D model in Three.js.
       USER INPUT: "${originalPrompt}"
@@ -261,15 +239,11 @@ export const enhanceUserPrompt = async (originalPrompt: string, category: string
   }
 };
 
-// ... (Keep existing enhanceScenePrompt function unchanged) ...
 export const enhanceScenePrompt = async (originalPrompt: string): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   if (!originalPrompt.trim()) return "";
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await backend.ai.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `You are a Creative 3D Director.
       CONTEXT: The user is building an animated 3D scene in Three.js (Motion Studio).
@@ -288,13 +262,10 @@ export const enhanceScenePrompt = async (originalPrompt: string): Promise<string
 };
 
 export const enhanceCinematicPrompt = async (originalPrompt: string): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   if (!originalPrompt.trim()) return "";
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await backend.ai.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `You are a Virtual Cinematographer.
       CONTEXT: The user is scripting a short movie scene in Three.js.
@@ -313,15 +284,9 @@ export const enhanceCinematicPrompt = async (originalPrompt: string): Promise<st
   }
 };
 
-// ... (Updated generateAnimationCode) ...
 export const generateAnimationCode = async (prompt: string, previousCode?: string, imageBase64?: string, category?: string): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   const isPrintable = category?.toLowerCase().includes('print') || category?.toLowerCase().includes('parametric');
 
-  // Define the "Mindset" - COMPUTATIONAL GEOMETRY ARCHITECT
   const mindset = `
     ROLE: You are a Computational Geometry Specialist & Parametric Designer.
     
@@ -339,7 +304,6 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
     - Background: Dark Technical Grid (#111827).
   `;
 
-  // Enhanced Boilerplate for Engineering/CAD
   const commonRequirements = `
     CRITICAL TECHNICAL REQUIREMENTS FOR THE HTML OUTPUT:
     1. **IMPORT MAP (LATEST STABLE)**: 
@@ -396,7 +360,6 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
        - Add \`body { margin: 0; overflow: hidden; }\` in \`<style>\`.
   `;
 
-  // Instructions to prioritize Constructive Geometry
   const highFidelityRules = `
     *** GEOMETRIC CONSTRUCTION RULES ***:
     1. **USE PROFILES (2D -> 3D)**: 
@@ -421,7 +384,6 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
   let fullPrompt = "";
 
   if (previousCode) {
-    // *** EDIT MODE ***
     fullPrompt = `
       ${mindset}
       
@@ -445,7 +407,6 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
       - Return ONLY the raw string of the HTML file, starting with <!DOCTYPE html>.
     `;
   } else {
-    // *** NEW MODE ***
     fullPrompt = `
       ${mindset}
       
@@ -473,21 +434,16 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
       parts.push({ inlineData: { mimeType: 'image/png', data: cleanBase64 } });
   }
 
-  // Gemini 3 Pro with Thinking Budget for complex geometry planning
-  const response = await ai.models.generateContent({
+  const response = await backend.ai.generateContent({
     model: 'gemini-3-pro-preview',
     contents: { parts },
     config: {
-        thinkingConfig: { thinkingBudget: 16384 } // INCREASED: To 16k for maximum geometry reasoning
+        thinkingConfig: { thinkingBudget: 16384 }
     }
   });
 
   let text = response.text || "";
-  
-  // Cleanup markdown
   text = text.replace(/```html/g, '').replace(/```/g, '');
-  
-  // Aggressively find the HTML start
   const docTypeMatch = text.match(/<!DOCTYPE html>/i);
   const htmlTagMatch = text.match(/<html/i);
   
@@ -500,13 +456,7 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
   return text.trim();
 };
 
-// ... (Rest of the file remains unchanged) ...
 export const generateCreativeSceneCode = async (prompt: string, previousCode?: string, style: string = 'standard', hasProductImage: boolean = false): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
-  // DEFINING VISUAL STYLES
   const styleInstructions: Record<string, string> = {
     'standard': `
       - Style: Balanced, Neutral Lighting.
@@ -634,7 +584,7 @@ export const generateCreativeSceneCode = async (prompt: string, previousCode?: s
     `;
   }
 
-  const response = await ai.models.generateContent({
+  const response = await backend.ai.generateContent({
     model: 'gemini-3-pro-preview',
     contents: { parts: [{ text: fullPrompt }] },
     config: {
@@ -647,15 +597,7 @@ export const generateCreativeSceneCode = async (prompt: string, previousCode?: s
   return htmlMatch ? htmlMatch[0] : text.replace(/```html/g, '').replace(/```/g, '').trim();
 };
 
-/**
- * MOVIE MAKER - SEQUENTIAL SCENE GENERATION
- * Focuses on cinematic camera moves, specific duration, and transitions.
- */
 export const generateCinematicScene = async (prompt: string, duration: number, sceneNumber: number, previousSceneDescription?: string): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   const mindset = `
     ROLE: You are a Virtual Cinematographer and 3D Director.
     TASK: Create a self-contained HTML/Three.js scene that plays a SPECIFIC ACTION for exactly ${duration} SECONDS.
@@ -700,7 +642,7 @@ export const generateCinematicScene = async (prompt: string, duration: number, s
     - Return ONLY the raw string of the HTML file.
   `;
 
-  const response = await ai.models.generateContent({
+  const response = await backend.ai.generateContent({
     model: 'gemini-3-pro-preview',
     contents: { parts: [{ text: mindset }] },
     config: {
@@ -714,10 +656,6 @@ export const generateCinematicScene = async (prompt: string, duration: number, s
 };
 
 export const fixThreeJSCode = async (brokenCode: string, errorMessage: string): Promise<string> => {
-  if (!API_KEY) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-
   const prompt = `
     You are a Three.js Debugger.
     
@@ -743,11 +681,11 @@ export const fixThreeJSCode = async (brokenCode: string, errorMessage: string): 
   `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview', // UPGRADED: From Flash to Pro for stronger code reasoning
+    const response = await backend.ai.generateContent({
+      model: 'gemini-3-pro-preview', 
       contents: { parts: [{ text: prompt }] },
       config: {
-          thinkingConfig: { thinkingBudget: 2048 } // ADDED: Thinking budget for debugging
+          thinkingConfig: { thinkingBudget: 2048 } 
       }
     });
     
@@ -756,6 +694,6 @@ export const fixThreeJSCode = async (brokenCode: string, errorMessage: string): 
     return htmlMatch ? htmlMatch[0] : text.replace(/```html/g, '').replace(/```/g, '').trim();
   } catch (e) {
     console.error("Auto-fix failed", e);
-    return brokenCode; // Return original if fix fails
+    return brokenCode; 
   }
 };

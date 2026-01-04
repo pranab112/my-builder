@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useAuth } from '../contexts/AuthContext';
+import { useGlobalStore } from '../stores/globalStore';
 import { Button } from './Button';
 
 interface AuthPageProps {
@@ -9,21 +9,15 @@ interface AuthPageProps {
 export const AuthPage: React.FC<AuthPageProps> = ({ onBack }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState(''); // Password is mock only
+  const [password, setPassword] = useState(''); // Password field kept for UI realism, though backend.ts mocks it
   const [name, setName] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   
-  const { login, register, loginWithGoogle } = useAuth();
+  const { login, register, loginGoogle, isAuthLoading, authError } = useGlobalStore();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setIsSubmitting(true);
-
+    
     if (!email || !password || (!isLogin && !name)) {
-      setError("Please fill in all fields.");
-      setIsSubmitting(false);
       return;
     }
 
@@ -33,22 +27,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onBack }) => {
       } else {
         await register(name, email);
       }
-    } catch (err: any) {
-      setError(err.message || "Authentication failed");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    setError(null);
-    setIsSubmitting(true);
-    try {
-        await loginWithGoogle();
-    } catch (err: any) {
-        setError(err.message || "Google login failed");
-    } finally {
-        setIsSubmitting(false);
+    } catch (err) {
+      // Error handled by store state
     }
   };
 
@@ -119,15 +99,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onBack }) => {
                 />
             </div>
 
-            {error && (
+            {authError && (
                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-200 text-sm text-center">
-                    {error}
+                    {authError}
                 </div>
             )}
 
             <Button 
                 type="submit" 
-                isLoading={isSubmitting} 
+                isLoading={isAuthLoading} 
                 className="w-full !py-4 text-lg"
             >
                 {isLogin ? "Sign In" : "Create Account"}
@@ -145,8 +125,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onBack }) => {
 
         <button 
             type="button"
-            onClick={handleGoogleLogin}
-            disabled={isSubmitting}
+            onClick={() => loginGoogle()}
+            disabled={isAuthLoading}
             className="w-full flex items-center justify-center gap-3 px-6 py-3 rounded-xl font-semibold bg-white hover:bg-slate-100 text-slate-900 transition-all duration-200 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
         >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
@@ -162,7 +142,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onBack }) => {
             <p className="text-slate-400 text-sm">
                 {isLogin ? "Don't have an account?" : "Already have an account?"}{" "}
                 <button 
-                    onClick={() => { setIsLogin(!isLogin); setError(null); }}
+                    onClick={() => { setIsLogin(!isLogin); }}
                     className="text-indigo-400 hover:text-indigo-300 font-semibold transition-colors"
                 >
                     {isLogin ? "Sign Up" : "Sign In"}
@@ -172,8 +152,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onBack }) => {
         
         <div className="mt-8 pt-6 border-t border-slate-800 text-center">
             <p className="text-[10px] text-slate-600">
-                Protected by Gemini Enterprise Security. <br/>
-                This is a demo. Use any password.
+                Data secured by ProShot Cloud. <br/>
+                Backend Protocol: v1.0 (Local Adapter)
             </p>
         </div>
       </div>
