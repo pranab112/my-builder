@@ -2,11 +2,539 @@
 import { Type } from "@google/genai"; // Keep for Type definitions only
 import { AspectRatio, ImageResolution } from "../types";
 import { backend } from "./backend";
+import { WorkspaceMode } from "../components/AnimationMaker/types";
 
 export interface CategorySuggestion {
   title: string;
   description: string;
 }
+
+interface ModeConfig {
+  name: string;
+  scale: string;
+  units: string;
+  geometryRules: string;
+  materialDefaults: string;
+  specialFeatures: string;
+  qualityFocus: string;
+  exportPriority: string[];
+}
+
+const MODE_AI_CONFIG: Record<WorkspaceMode, ModeConfig> = {
+  // ═══════════════════════════════════════════════════════════════
+  // ORIGINAL 4 MODES
+  // ═══════════════════════════════════════════════════════════════
+
+  maker: {
+    name: "3D Printing / Maker",
+    scale: "Real-world physical scale (typically 50-300mm)",
+    units: "millimeters (mm)",
+    geometryRules: `
+      - MANDATORY: Geometry must be MANIFOLD (watertight, no holes, no self-intersecting faces)
+      - MANDATORY: Minimum wall thickness of 1.2mm for FDM, 0.8mm for SLA
+      - MANDATORY: No zero-thickness planes or single-face geometry
+      - Avoid overhangs greater than 45° without supports
+      - Use chamfers/fillets on sharp edges (minimum 0.5mm radius)
+      - Ensure flat bottom surface for bed adhesion
+      - Check for inverted normals (use geometry.computeVertexNormals())
+    `,
+    materialDefaults: `
+      new THREE.MeshStandardMaterial({
+        color: 0xe0e0e0,
+        roughness: 0.6,
+        metalness: 0.1,
+        flatShading: false,
+        side: THREE.FrontSide  // NOT DoubleSide for manifold check
+      })
+    `,
+    specialFeatures: `
+      - Add GUI sliders for physical dimensions (width_mm, height_mm, depth_mm)
+      - Include "wall_thickness" parameter
+      - Add "printer_tolerance" parameter (default 0.2mm)
+      - Generate mounting holes with proper clearance (M3 = 3.2mm hole)
+    `,
+    qualityFocus: "Printability, structural integrity, assembly fit",
+    exportPriority: ["STL", "OBJ", "3MF"]
+  },
+
+  designer: {
+    name: "Product Design / Industrial Design",
+    scale: "Real product scale (varies by product type)",
+    units: "millimeters (mm) for small products, centimeters for furniture",
+    geometryRules: `
+      - Focus on AESTHETIC quality over printability
+      - Use smooth, organic curves (high segment counts)
+      - Apply generous fillets and chamfers for premium look
+      - Create subtle surface details (embossed logos, texture zones)
+      - Use beveled edges for visual interest
+      - Consider parting lines and manufacturing seams
+    `,
+    materialDefaults: `
+      new THREE.MeshPhysicalMaterial({
+        color: 0xffffff,
+        roughness: 0.15,
+        metalness: 0.0,
+        clearcoat: 0.8,
+        clearcoatRoughness: 0.1,
+        reflectivity: 0.5
+      })
+    `,
+    specialFeatures: `
+      - Add CMF controls (Color picker, Metalness slider, Roughness slider)
+      - Include "corner_radius" for fillet control
+      - Add "surface_finish" dropdown (matte, gloss, satin, soft-touch)
+      - Support multiple material zones on single model
+    `,
+    qualityFocus: "Visual appeal, photorealism, brand aesthetics",
+    exportPriority: ["GLTF", "GLB", "OBJ"]
+  },
+
+  engineer: {
+    name: "Engineering / CAD / Mechanical",
+    scale: "Precise real-world dimensions",
+    units: "millimeters (mm) with 0.01mm precision",
+    geometryRules: `
+      - CRITICAL: Exact dimensional accuracy
+      - Use precise geometric primitives (not organic shapes)
+      - Include proper tolerances for fits:
+        * Clearance fit: +0.2mm
+        * Transition fit: +0.05mm
+        * Press fit: -0.05mm
+      - Create proper threads using helical geometry or boolean cuts
+      - Include chamfers on all edges (0.5mm x 45°)
+      - Design for assembly (alignment features, snap-fits)
+    `,
+    materialDefaults: `
+      new THREE.MeshStandardMaterial({
+        color: 0xcccccc,
+        roughness: 0.4,
+        metalness: 0.6,
+        flatShading: false
+      })
+    `,
+    specialFeatures: `
+      - ALL dimensions as GUI parameters with 0.1mm step
+      - Include "tolerance" parameter
+      - Add "thread_pitch" for threaded features
+      - Show dimension labels in 3D space (CSS2DRenderer)
+      - Include assembly exploded view toggle
+    `,
+    qualityFocus: "Dimensional accuracy, functional fits, assembly",
+    exportPriority: ["STEP", "STL", "OBJ"]
+  },
+
+  game_dev: {
+    name: "Game Development / Real-time 3D",
+    scale: "Game units (typically 1 unit = 1 meter)",
+    units: "units (generic game units)",
+    geometryRules: `
+      - CRITICAL: Optimize for real-time rendering
+      - LOW POLY: Use minimum vertices needed
+        * Simple props: 100-500 triangles
+        * Characters: 2,000-10,000 triangles
+        * Hero assets: up to 50,000 triangles
+      - Use flat shading or baked normals instead of geometry detail
+      - Avoid n-gons, use only triangles/quads
+      - Create clean UV unwraps for texturing
+      - Design modular pieces that can be reused
+    `,
+    materialDefaults: `
+      new THREE.MeshStandardMaterial({
+        color: 0x888888,
+        roughness: 0.7,
+        metalness: 0.0,
+        flatShading: true  // Low-poly aesthetic
+      })
+    `,
+    specialFeatures: `
+      - Add "lod_level" parameter (0=high, 1=medium, 2=low)
+      - Include triangle count display
+      - Add "segments" controls for geometry reduction
+      - Support for generating collision mesh (simplified)
+      - Include pivot point adjustment
+    `,
+    qualityFocus: "Performance, low triangle count, clean topology",
+    exportPriority: ["GLTF", "GLB", "FBX"]
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // HIGH-VALUE ADDITIONS
+  // ═══════════════════════════════════════════════════════════════
+
+  architect: {
+    name: "Architecture / Interior Design",
+    scale: "Building scale (meters)",
+    units: "meters (m) and centimeters (cm)",
+    geometryRules: `
+      - Use REAL BUILDING SCALE:
+        * Wall height: 2.4m - 3.0m standard
+        * Door: 2.1m x 0.9m
+        * Window: variable, typically 1.2m x 1.5m
+        * Furniture to human scale
+      - Create proper wall thickness (150mm - 300mm)
+      - Include floor plates and ceiling planes
+      - Design with structural logic (columns, beams)
+      - Use modular grid system (typically 1.2m or 600mm modules)
+    `,
+    materialDefaults: `
+      // Walls
+      new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 0.9 })
+      // Floor
+      new THREE.MeshStandardMaterial({ color: 0x8b7355, roughness: 0.6 })
+      // Glass
+      new THREE.MeshPhysicalMaterial({
+        color: 0x88ccff,
+        transparent: true,
+        opacity: 0.3,
+        transmission: 0.9,
+        roughness: 0.0
+      })
+    `,
+    specialFeatures: `
+      - Add "floor_count" parameter
+      - Include "room_width", "room_depth", "ceiling_height"
+      - Add "wall_thickness" control
+      - Include window/door placement parameters
+      - Support for floor plan view (orthographic top-down)
+      - Add sunlight angle control for shadow studies
+    `,
+    qualityFocus: "Spatial accuracy, realistic proportions, lighting studies",
+    exportPriority: ["GLTF", "OBJ", "FBX"]
+  },
+
+  animator: {
+    name: "Animation / VFX / Motion Graphics",
+    scale: "Scene-relative (flexible)",
+    units: "arbitrary units",
+    geometryRules: `
+      - Design for DEFORMATION and MOVEMENT
+      - Create proper joint hierarchies (THREE.Bone, THREE.Skeleton)
+      - Use enough geometry for smooth bending
+      - Separate movable parts into distinct meshes
+      - Consider silhouette readability
+      - Design with squash/stretch in mind
+    `,
+    materialDefaults: `
+      new THREE.MeshToonMaterial({
+        color: 0xff6b6b,
+        gradientMap: threeToneGradient
+      })
+      // OR for realistic:
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.3,
+        metalness: 0.0,
+        envMapIntensity: 1.0
+      })
+    `,
+    specialFeatures: `
+      - Add "animation_speed" parameter
+      - Include keyframe timeline controls
+      - Add "bounce_amplitude", "rotation_speed" parameters
+      - Support for morph targets
+      - Include particle system controls
+      - Add camera animation path controls
+    `,
+    qualityFocus: "Deformability, visual appeal, performance",
+    exportPriority: ["GLTF", "GLB", "FBX"]
+  },
+
+  jewelry: {
+    name: "Jewelry Design",
+    scale: "MICRO scale (millimeters)",
+    units: "millimeters (mm) with 0.01mm precision",
+    geometryRules: `
+      - MICRO SCALE: Rings are 16-22mm diameter, pendants 10-40mm
+      - HIGH DETAIL: Use high segment counts (64+ for circles)
+      - Create proper gem settings:
+        * Prong settings (4 or 6 prongs)
+        * Bezel settings (metal rim)
+        * Pavé settings (small stones in pattern)
+      - Include proper ring sizing (US sizes 4-13)
+      - Design for casting (no undercuts, proper draft angles)
+      - Wall thickness minimum 0.8mm for precious metals
+    `,
+    materialDefaults: `
+      // Gold
+      new THREE.MeshPhysicalMaterial({
+        color: 0xffd700,
+        roughness: 0.1,
+        metalness: 1.0,
+        reflectivity: 1.0
+      })
+      // Silver
+      new THREE.MeshPhysicalMaterial({
+        color: 0xc0c0c0,
+        roughness: 0.15,
+        metalness: 1.0
+      })
+      // Gemstone
+      new THREE.MeshPhysicalMaterial({
+        color: 0xff0000,
+        transmission: 0.95,
+        roughness: 0.0,
+        ior: 2.4,  // Diamond IOR
+        thickness: 2
+      })
+    `,
+    specialFeatures: `
+      - Add "ring_size_us" parameter (converts to mm diameter)
+      - Include "band_width", "band_thickness"
+      - Add "gem_carat" parameter (calculates size)
+      - Add "metal_type" dropdown (gold, silver, platinum, rose gold)
+      - Include "gem_type" dropdown (diamond, ruby, emerald, sapphire)
+      - Show weight estimate in grams
+    `,
+    qualityFocus: "Micro-detail, gem brilliance, castability",
+    exportPriority: ["STL", "OBJ", "3DM"]
+  },
+
+  medical: {
+    name: "Medical / Scientific / Anatomical",
+    scale: "Anatomical scale (varies)",
+    units: "millimeters (mm) for implants, centimeters for organs",
+    geometryRules: `
+      - ANATOMICAL ACCURACY is critical
+      - Create organic, smooth surfaces (high poly for curves)
+      - Ensure MANIFOLD geometry for 3D printing prosthetics
+      - Use proper anatomical proportions
+      - Include surface texture for tissue types
+      - Design with biocompatibility in mind (smooth surfaces, no sharp edges)
+    `,
+    materialDefaults: `
+      // Bone
+      new THREE.MeshStandardMaterial({ color: 0xf5f5dc, roughness: 0.8 })
+      // Soft tissue
+      new THREE.MeshStandardMaterial({
+        color: 0xffcccb,
+        roughness: 0.6,
+        transparent: true,
+        opacity: 0.9
+      })
+      // Implant/Metal
+      new THREE.MeshStandardMaterial({
+        color: 0xaaaaaa,
+        roughness: 0.2,
+        metalness: 0.9
+      })
+    `,
+    specialFeatures: `
+      - Add "scale_factor" for patient-specific sizing
+      - Include "wall_thickness" for hollow models
+      - Add "section_plane" for cross-section views
+      - Include transparency toggle for layered viewing
+      - Add measurement tools (distance, angle)
+      - Support for DICOM-based scaling
+    `,
+    qualityFocus: "Anatomical accuracy, printability, educational clarity",
+    exportPriority: ["STL", "OBJ", "PLY"]
+  },
+
+  ecommerce: {
+    name: "E-commerce / Product Visualization",
+    scale: "Real product scale",
+    units: "centimeters (cm) for display",
+    geometryRules: `
+      - Optimize for WEB VIEWING (balance quality vs file size)
+      - Target 10,000 - 50,000 triangles
+      - Create clean, appealing silhouettes
+      - Include subtle surface details visible in renders
+      - Design for 360° viewing (good from all angles)
+      - Ensure no visual artifacts at any rotation
+    `,
+    materialDefaults: `
+      new THREE.MeshPhysicalMaterial({
+        color: 0xffffff,
+        roughness: 0.2,
+        metalness: 0.0,
+        clearcoat: 0.5,
+        clearcoatRoughness: 0.1,
+        envMapIntensity: 1.2
+      })
+    `,
+    specialFeatures: `
+      - Add "turntable_speed" parameter
+      - Include "camera_distance" control
+      - Add "background_color" picker
+      - Include "product_color" variant switcher
+      - Add "hotspot" markers for feature callouts
+      - Support for AR preview mode
+      - Include "zoom_limits" for viewer constraints
+    `,
+    qualityFocus: "Visual appeal, web performance, interactivity",
+    exportPriority: ["GLTF", "GLB", "USDZ"]
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // NICHE MODES
+  // ═══════════════════════════════════════════════════════════════
+
+  sculptor: {
+    name: "Digital Sculpture / Fine Art",
+    scale: "Artistic scale (flexible)",
+    units: "arbitrary units",
+    geometryRules: `
+      - HIGH POLY is acceptable for artistic detail
+      - Focus on organic, flowing forms
+      - Create smooth surface transitions
+      - Use subdivision-ready topology
+      - Consider sculptural composition and negative space
+      - Design for multiple viewing angles
+    `,
+    materialDefaults: `
+      // Clay/Bronze look
+      new THREE.MeshStandardMaterial({
+        color: 0x8b4513,
+        roughness: 0.7,
+        metalness: 0.3
+      })
+      // Marble look
+      new THREE.MeshPhysicalMaterial({
+        color: 0xfafafa,
+        roughness: 0.3,
+        metalness: 0.0,
+        sheen: 0.5
+      })
+    `,
+    specialFeatures: `
+      - Add "subdivision_level" parameter
+      - Include "material_preset" dropdown (clay, bronze, marble, wood)
+      - Add "base/pedestal" toggle
+      - Include dramatic lighting presets
+      - Support for matcap materials
+    `,
+    qualityFocus: "Artistic expression, surface quality, form",
+    exportPriority: ["OBJ", "STL", "ZBR"]
+  },
+
+  automotive: {
+    name: "Automotive / Vehicle Design",
+    scale: "Real vehicle scale (meters)",
+    units: "meters (m) and millimeters for details",
+    geometryRules: `
+      - Use NURBS-like smooth surfaces (high segment counts)
+      - Create proper panel gaps (3-5mm typical)
+      - Include shut lines and body panel divisions
+      - Design aerodynamic forms
+      - Use Class-A surface quality for body panels
+      - Include wheel wells, door handles, trim details
+    `,
+    materialDefaults: `
+      // Car paint
+      new THREE.MeshPhysicalMaterial({
+        color: 0xff0000,
+        roughness: 0.1,
+        metalness: 0.9,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.03,
+        reflectivity: 1.0
+      })
+      // Chrome
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.0,
+        metalness: 1.0
+      })
+      // Glass
+      new THREE.MeshPhysicalMaterial({
+        color: 0x222222,
+        transmission: 0.9,
+        roughness: 0.0,
+        thickness: 5
+      })
+    `,
+    specialFeatures: `
+      - Add "body_color" picker with metallic presets
+      - Include "wheel_size" parameter (inches)
+      - Add "ground_clearance" control
+      - Include "panel_gap" adjustment
+      - Add environment reflection intensity
+      - Support for wheel rotation animation
+    `,
+    qualityFocus: "Surface quality, reflections, aerodynamic form",
+    exportPriority: ["GLTF", "OBJ", "FBX"]
+  },
+
+  fashion: {
+    name: "Fashion / Apparel / Textile",
+    scale: "Human body scale",
+    units: "centimeters (cm)",
+    geometryRules: `
+      - Design for FABRIC SIMULATION appearance
+      - Create natural draping and folds
+      - Use cloth-like topology (quad-based for simulation)
+      - Include seam lines and stitching details
+      - Consider garment construction (panels, darts)
+      - Design flat pattern-ready geometry
+    `,
+    materialDefaults: `
+      // Fabric
+      new THREE.MeshStandardMaterial({
+        color: 0x4a90d9,
+        roughness: 0.8,
+        metalness: 0.0,
+        side: THREE.DoubleSide
+      })
+      // Silk
+      new THREE.MeshPhysicalMaterial({
+        color: 0xffd700,
+        roughness: 0.3,
+        metalness: 0.1,
+        sheen: 1.0,
+        sheenColor: new THREE.Color(0xffffff)
+      })
+    `,
+    specialFeatures: `
+      - Add "fabric_type" dropdown (cotton, silk, denim, leather)
+      - Include "body_size" parameter (XS-XXL)
+      - Add "drape_intensity" control
+      - Include seam visibility toggle
+      - Support for pattern/print texture
+      - Add mannequin/body toggle
+    `,
+    qualityFocus: "Fabric appearance, natural draping, pattern accuracy",
+    exportPriority: ["OBJ", "GLTF", "FBX"]
+  },
+
+  education: {
+    name: "Education / Learning / Tutorial",
+    scale: "Conceptual (flexible)",
+    units: "simplified units",
+    geometryRules: `
+      - SIMPLIFY complex forms for clarity
+      - Use clear, distinct shapes
+      - Create exploded views for assembly understanding
+      - Use color coding for different parts
+      - Include labels and annotations
+      - Design for step-by-step assembly visualization
+    `,
+    materialDefaults: `
+      // Use distinct colors for parts
+      new THREE.MeshStandardMaterial({
+        color: 0x4CAF50,  // Green
+        roughness: 0.5,
+        metalness: 0.0
+      })
+      // Semi-transparent for internal views
+      new THREE.MeshStandardMaterial({
+        color: 0x2196F3,
+        transparent: true,
+        opacity: 0.5
+      })
+    `,
+    specialFeatures: `
+      - Add "explode_distance" parameter for assembly view
+      - Include "step_number" for assembly sequence
+      - Add "highlight_part" selector
+      - Include "show_labels" toggle
+      - Add "transparency" slider for see-through
+      - Support for animation between assembly steps
+      - Include "quiz_mode" with part identification
+    `,
+    qualityFocus: "Clarity, educational value, step-by-step understanding",
+    exportPriority: ["GLTF", "GLB", "HTML"]
+  }
+};
 
 export const analyzeProductIdentity = async (base64Images: string[]): Promise<string> => {
   const systemPrompt = `
@@ -219,19 +747,35 @@ export const suggestProjectCategories = async (description: string): Promise<Cat
   }
 };
 
-export const enhanceUserPrompt = async (originalPrompt: string, category: string): Promise<string> => {
+export const enhanceUserPrompt = async (
+  originalPrompt: string, 
+  category: string, 
+  workspaceMode: WorkspaceMode = 'designer'
+): Promise<string> => {
   if (!originalPrompt.trim()) return "";
+
+  const modeConfig = MODE_AI_CONFIG[workspaceMode];
 
   try {
     const response = await backend.ai.generateContent({
       model: 'gemini-3-pro-preview',
-      contents: `You are a Technical 3D Prompt Engineer.
-      CONTEXT: The user is building a "${category}" 3D model in Three.js.
+      contents: `You are a Technical 3D Prompt Engineer specializing in ${modeConfig.name}.
+
+      CONTEXT:
+      - Category: "${category}"
+      - Workspace Mode: ${workspaceMode} (${modeConfig.name})
+      - Scale: ${modeConfig.scale}
+      - Units: ${modeConfig.units}
+      - Quality Focus: ${modeConfig.qualityFocus}
+
       USER INPUT: "${originalPrompt}"
-      
-      TASK: Rewrite the user's input into a highly detailed, descriptive technical prompt.
-      - FOCUS on Parametric variables: "Allow adjustment of radius", "Variable height", "Configurable number of segments".
-      - Specify geometric operations (e.g. "extrude profile", "chamfer edges").
+
+      TASK: Rewrite the user's input into a highly detailed, technical prompt appropriate for ${modeConfig.name}.
+
+      - Include specific dimensions in ${modeConfig.units}
+      - Add parametric variables relevant to this mode
+      - Specify geometric operations appropriate for ${workspaceMode}
+      - Include material suggestions matching the mode defaults
       `,
     });
     return response.text.trim();
@@ -285,29 +829,61 @@ export const enhanceCinematicPrompt = async (originalPrompt: string): Promise<st
   }
 };
 
-export const generateAnimationCode = async (prompt: string, previousCode?: string, imageBase64?: string, category?: string): Promise<string> => {
-  const isPrintable = category?.toLowerCase().includes('print') || category?.toLowerCase().includes('parametric');
+export const generateAnimationCode = async (
+  prompt: string, 
+  previousCode?: string, 
+  imageBase64?: string, 
+  category?: string, 
+  workspaceMode: WorkspaceMode = 'designer'
+): Promise<string> => {
+
+  // Get mode-specific configuration
+  const modeConfig = MODE_AI_CONFIG[workspaceMode];
+
+  const isPrintable = ['maker', 'medical', 'jewelry'].includes(workspaceMode) ||
+                      category?.toLowerCase().includes('print');
 
   const mindset = `
-    ROLE: You are a Computational Geometry Specialist & Parametric Designer.
-    
+    ROLE: You are a ${modeConfig.name} Specialist & Parametric Designer.
+
+    ═══════════════════════════════════════════════════════════════
+    WORKSPACE MODE: ${workspaceMode.toUpperCase()} - ${modeConfig.name}
+    ═══════════════════════════════════════════════════════════════
+
+    SCALE & UNITS:
+    - Working Scale: ${modeConfig.scale}
+    - Unit System: ${modeConfig.units}
+
+    GEOMETRY REQUIREMENTS:
+    ${modeConfig.geometryRules}
+
+    DEFAULT MATERIAL:
+    ${modeConfig.materialDefaults}
+
+    MODE-SPECIFIC FEATURES TO INCLUDE:
+    ${modeConfig.specialFeatures}
+
+    QUALITY FOCUS: ${modeConfig.qualityFocus}
+    PREFERRED EXPORT FORMATS: ${modeConfig.exportPriority.join(', ')}
+
+    ═══════════════════════════════════════════════════════════════
+
     CORE PHILOSOPHY: **Form is Configurable**.
     You do NOT create static sculptures. You create **Smart Objects** driven by variables.
-    
+
     YOUR GOAL:
-    Generate clean, constructive THREE.js code.
+    Generate clean, constructive THREE.js code optimized for ${modeConfig.name}.
     Crucially, you must expose PHYSICAL DIMENSIONS to the GUI so the user can TWEAK the design.
-    
-    VISUAL STYLE: 
-    - **Blueprint/Prototyping Aesthetic**.
-    - Material: \`new THREE.MeshStandardMaterial({ color: 0xe0e0e0, roughness: 0.6, metalness: 0.1, flatShading: false })\`.
-    - **EDGES**: You MUST add \`THREE.EdgesGeometry\` + \`THREE.LineSegments\` to the main mesh to highlight the wireframe contours on top of the solid model.
+
+    VISUAL STYLE:
+    - Follow the material defaults specified above for this mode.
+    - **EDGES**: Add \`THREE.EdgesGeometry\` + \`THREE.LineSegments\` for technical modes (maker, engineer, architect).
     - Background: Dark Technical Grid (#111827).
   `;
 
   const commonRequirements = `
     CRITICAL TECHNICAL REQUIREMENTS FOR THE HTML OUTPUT:
-    1. **IMPORT MAP (LATEST STABLE)**: 
+    1. **IMPORT MAP (LATEST STABLE)**:
        <script type="importmap">
          {
            "imports": {
@@ -316,7 +892,7 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
            }
          }
        </script>
-    
+
     2. **MODULE SCRIPT**:
        - Import THREE, OrbitControls.
        - Import { TransformControls } from 'three/addons/controls/TransformControls.js'.
@@ -324,9 +900,9 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
        - Import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
        - Import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
        - Import GUI from 'three/addons/libs/lil-gui.module.min.js'.
-       - **NEW**: Import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
-       - **NEW**: Import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
-       - **NEW**: Import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+       - Import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
+       - Import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+       - Import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
     3. **CAD SCENE SETUP**:
        - Renderer: \`antialias: true, localClippingEnabled: true\`.
@@ -340,49 +916,61 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
        - Directional (Headlight): Follows camera or fixed at (10, 10, 10). Intensity 1.0.
 
     5. **PARAMETRIC GUI (MANDATORY)**:
-       - You MUST create a \`params\` object containing PHYSICAL DIMENSIONS (e.g., radius, height, thickness, count, angle).
-       - You MUST create a \`regenerate()\` function that:
-         1. Checks \`if (mesh.geometry) mesh.geometry.dispose();\`
-         2. Creates NEW geometry based on current \`params\`.
-         3. Assigns it to the mesh.
-       - You MUST add sliders: \`gui.add(params, 'width', 1, 20).onChange(regenerate);\`
-       - **GOAL**: The user must be able to CUSTOMIZE the shape using the UI sliders.
-       
+       - Create a \`params\` object with mode-appropriate parameters.
+       - Create a \`regenerate()\` function.
+       - Add GUI sliders based on the MODE-SPECIFIC FEATURES listed above.
+
     6. **DEBUGGING HOOKS (CRITICAL)**:
-       - At the very end of your script, you MUST expose the core variables to the global scope for the external debugger to work.
-       - ADD THIS EXACT CODE at the end:
-         \`\`\`js
-         window.scene = scene;
-         window.camera = camera;
-         window.renderer = renderer;
-         window.controls = controls; // OrbitControls
-         \`\`\`
-         
+       - At the end, expose: window.scene, window.camera, window.renderer, window.controls, window.exportMesh
+
     7. **NO BLACK SCREENS**:
-       - Always verify \`renderer.setSize(window.innerWidth, window.innerHeight)\`.
-       - Always verify \`document.body.appendChild(renderer.domElement)\`.
-       - Add \`body { margin: 0; overflow: hidden; }\` in \`<style>\`.
+       - Verify renderer.setSize, camera position, body margin:0
   `;
 
-  const highFidelityRules = `
-    *** GEOMETRIC CONSTRUCTION RULES ***:
-    1. **USE PROFILES (2D -> 3D)**: 
-       - Do not just stack \`BoxGeometry\`. 
-       - **PREFERRED**: Define a \`THREE.Shape()\`, then use \`THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, ... })\`.
-       - **PREFERRED**: Use \`THREE.LatheGeometry(points)\` for cylindrical objects (bottles, shafts, vases).
-       - **PREFERRED**: Use \`THREE.TubeGeometry\` for pipes/wires.
-    
-    2. **MANIFOLD GEOMETRY (For 3D Printing)**:
-       - Ensure volumes are closed.
-       - If ${isPrintable ? "true" : "false"}: Avoid zero-thickness planes. Use \`side: THREE.DoubleSide\` only for visualization, but geometry must be thick.
-       
-    3. **GROUPING**:
-       - Combine parts into a single \`THREE.Group\` for the final object.
-       - IMPORTANT: Assign this group to a variable \`window.exportMesh = myGroup;\` so external exporters can find it easily.
+  const modeSpecificRules = `
+    *** ${modeConfig.name.toUpperCase()} SPECIFIC CONSTRUCTION RULES ***:
 
-    4. **SYNTAX SAFETY**:
-       - **Use \`shape.closePath()\`** (NOT \`shape.close()\`) when defining 2D shapes.
-       - If using \`THREE.Path\`, use \`closePath()\`.
+    ${modeConfig.geometryRules}
+
+    PARAMETERS TO EXPOSE IN GUI:
+    ${modeConfig.specialFeatures}
+
+    ${isPrintable ? `
+    *** PRINTABILITY REQUIREMENTS ***:
+    - Ensure geometry is MANIFOLD (watertight)
+    - No zero-thickness surfaces
+    - Minimum wall thickness as specified
+    - Use THREE.FrontSide for materials (not DoubleSide)
+    ` : ''}
+
+    ${workspaceMode === 'game_dev' ? `
+    *** GAME OPTIMIZATION REQUIREMENTS ***:
+    - Keep triangle count LOW (display count in GUI)
+    - Use flatShading: true for low-poly aesthetic
+    - Create clean, quad-based topology
+    ` : ''}
+
+    ${workspaceMode === 'jewelry' ? `
+    *** JEWELRY PRECISION REQUIREMENTS ***:
+    - Use 64+ segments for all circular geometry
+    - Ring sizes: US 4 = 14.9mm, US 7 = 17.3mm, US 10 = 19.8mm
+    - Gem sizes: 1 carat round = 6.5mm diameter
+    ` : ''}
+
+    ${workspaceMode === 'architect' ? `
+    *** ARCHITECTURAL SCALE REQUIREMENTS ***:
+    - Standard door: 2100mm x 900mm
+    - Standard ceiling: 2400mm - 3000mm
+    - Wall thickness: 150mm - 300mm
+    - Use meters for main dimensions
+    ` : ''}
+
+    ${workspaceMode === 'automotive' ? `
+    *** AUTOMOTIVE SURFACE REQUIREMENTS ***:
+    - Use high segment counts for smooth body panels
+    - Panel gaps should be 3-5mm
+    - Use clearcoat material for paint
+    ` : ''}
   `;
 
   let fullPrompt = "";
@@ -390,42 +978,46 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
   if (previousCode) {
     fullPrompt = `
       ${mindset}
-      
-      CONTEXT: You are modifying an existing Parametric CAD model.
-      
+
+      CONTEXT: You are modifying an existing ${modeConfig.name} model.
+
       EXISTING CODE:
       ${previousCode}
-      
+
       USER REQUEST FOR UPDATE: "${prompt}"
       ${imageBase64 ? "NOTE: User provided a reference image. Adjust geometry to match." : ""}
-      
-      TASK: 
+
+      TASK:
       1. Analyze the EXISTING CODE.
       2. Modify the code to satisfy the USER REQUEST.
-      3. **PRESERVE PARAMETERS**: If the user asks for a change, consider exposing it as a new Slider in the GUI.
-      
+      3. **PRESERVE PARAMETERS**: Add new Sliders to the GUI as needed.
+      4. **MAINTAIN MODE STANDARDS**: Keep all ${workspaceMode} mode requirements.
+
       ${commonRequirements}
-      ${highFidelityRules}
-      
+      ${modeSpecificRules}
+
       OUTPUT FORMAT:
       - Return ONLY the raw string of the HTML file, starting with <!DOCTYPE html>.
     `;
   } else {
     fullPrompt = `
       ${mindset}
-      
+
       TASK: Create a self-contained HTML file that renders a Configurable 3D Model.
+      MODE: ${workspaceMode} (${modeConfig.name})
+
       ${imageBase64 ? `
         **REVERSE ENGINEERING TASK**:
         1. Analyze the image GEOMETRY.
-        2. Create a PARAMETRIC version of this object. (e.g., if it's a cup, allow changing height and radius).
-        
+        2. Create a PARAMETRIC version optimized for ${modeConfig.name}.
+        3. Apply ${workspaceMode} mode standards for scale, materials, and features.
+
         ${prompt ? `**ADDITIONAL INSTRUCTIONS**: "${prompt}"` : ""}
       ` : `User Request: "${prompt}"`}
-      
+
       ${commonRequirements}
-      ${highFidelityRules}
-      
+      ${modeSpecificRules}
+
       OUTPUT FORMAT:
       - Return ONLY the raw string of the HTML file, starting with <!DOCTYPE html>.
     `;
@@ -450,7 +1042,7 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
   text = text.replace(/```html/g, '').replace(/```/g, '');
   const docTypeMatch = text.match(/<!DOCTYPE html>/i);
   const htmlTagMatch = text.match(/<html/i);
-  
+
   if (docTypeMatch && docTypeMatch.index !== undefined) {
       return text.substring(docTypeMatch.index);
   } else if (htmlTagMatch && htmlTagMatch.index !== undefined) {

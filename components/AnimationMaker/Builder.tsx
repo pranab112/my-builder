@@ -271,7 +271,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
           finalPrompt += ` \n[SYSTEM: An imported model is available at 'window.IMPORTED_MODEL_URL'. Load it using the global helper: 'await window.loadImportedModel(window.IMPORTED_MODEL_URL, window.IMPORTED_MODEL_TYPE)'. The model type is '${(project as any).importedType || 'stl'}'. Do NOT write a loader class from scratch, use the helper.]`;
       }
 
-      const code = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imageToUse, project.category);
+      const code = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imageToUse, project.category, workspaceMode);
       
       if (!code || code.length < 50) throw new Error("Generated code seems invalid.");
 
@@ -302,7 +302,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       if (!store.prompt.trim()) return;
       store.setEnhancing(true);
       try {
-          const improved = await enhanceUserPrompt(store.prompt, project.category);
+          const improved = await enhanceUserPrompt(store.prompt, project.category, workspaceMode);
           store.setPrompt(improved);
       } catch (e) {
           // ignore
