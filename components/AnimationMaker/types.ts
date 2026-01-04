@@ -6,6 +6,8 @@ export interface SavedProject {
   category: string;
   code: string;
   date: number;
+  importedData?: string;
+  importedType?: string;
 }
 
 export type ViewState = 'dashboard' | 'create-details' | 'create-category' | 'builder';
@@ -15,7 +17,23 @@ export type GizmoMode = 'translate' | 'rotate' | 'scale' | 'measure' | 'none';
 export type PrinterPreset = 'ender3' | 'bambu' | 'prusa' | 'custom';
 export type MaterialType = 'pla' | 'petg' | 'abs' | 'tpu';
 export type UnitSystem = 'mm' | 'inch';
-export type WorkspaceMode = 'maker' | 'designer' | 'engineer' | 'game_dev';
+
+export type WorkspaceMode = 
+  | 'maker' 
+  | 'designer' 
+  | 'engineer' 
+  | 'game_dev'
+  // High-Value
+  | 'architect'
+  | 'animator'
+  | 'jewelry'
+  | 'medical'
+  | 'ecommerce'
+  // Niche
+  | 'sculptor'
+  | 'automotive'
+  | 'fashion'
+  | 'education';
 
 export interface CameraBookmark {
   id: string;

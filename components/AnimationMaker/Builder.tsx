@@ -19,6 +19,7 @@ interface BuilderProps {
 }
 
 const MODE_CONFIG: Record<WorkspaceMode, { tabs: Tab[], label: string, icon: string }> = {
+  // Existing
   maker: {
     label: '3D Print',
     icon: '🖨️',
@@ -38,6 +39,53 @@ const MODE_CONFIG: Record<WorkspaceMode, { tabs: Tab[], label: string, icon: str
     label: 'Game Assets',
     icon: '🎮',
     tabs: ['tools', 'material', 'export']
+  },
+  // High-Value Additions
+  architect: {
+    label: 'Architecture',
+    icon: '🏛️',
+    tabs: ['tools', 'specs', 'environment', 'export']
+  },
+  animator: {
+    label: 'Animation/VFX',
+    icon: '🎬',
+    tabs: ['tools', 'environment', 'material', 'export']
+  },
+  jewelry: {
+    label: 'Jewelry Design',
+    icon: '💎',
+    tabs: ['tools', 'material', 'specs', 'environment', 'export']
+  },
+  medical: {
+    label: 'Medical/Sci',
+    icon: '🏥',
+    tabs: ['tools', 'specs', 'print', 'export']
+  },
+  ecommerce: {
+    label: 'E-commerce',
+    icon: '🛒',
+    tabs: ['tools', 'material', 'environment', 'export']
+  },
+  // Niche but Growing
+  sculptor: {
+    label: 'Digital Art',
+    icon: '🗿',
+    tabs: ['tools', 'material', 'environment', 'export']
+  },
+  automotive: {
+    label: 'Automotive',
+    icon: '🚗',
+    tabs: ['tools', 'specs', 'material', 'environment', 'export']
+  },
+  fashion: {
+    label: 'Fashion',
+    icon: '👗',
+    tabs: ['tools', 'material', 'environment', 'export']
+  },
+  education: {
+    label: 'Learning',
+    icon: '📚',
+    tabs: ['tools', 'specs', 'export']
   }
 };
 
@@ -187,9 +235,13 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       // We need to access project prop directly or put it in store.
       // Assuming 'project' prop has it (mapped in AnimationMaker.tsx)
       const importedData = (project as any).importedData;
+      const importedType = (project as any).importedType || 'stl'; // Default to stl if missing
       
       if (importedData) {
-          const injection = `<script>window.IMPORTED_MODEL_URL = "${importedData}";</script>`;
+          const injection = `<script>
+            window.IMPORTED_MODEL_URL = "${importedData}";
+            window.IMPORTED_MODEL_TYPE = "${importedType}";
+          </script>`;
           modified = modified.replace('<head>', '<head>' + injection);
       }
       return modified;
@@ -215,7 +267,8 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       // Check if we have imported model context to add to prompt
       let finalPrompt = store.prompt;
       if ((project as any).importedData && !store.htmlCode) {
-          finalPrompt += " \n[SYSTEM: An imported model is available at window.IMPORTED_MODEL_URL. Use a Three.js loader (STLLoader, GLTFLoader, OBJLoader) based on the file type to load and display it.]";
+          // Instruct AI to use the utility function
+          finalPrompt += ` \n[SYSTEM: An imported model is available at 'window.IMPORTED_MODEL_URL'. Load it using the global helper: 'await window.loadImportedModel(window.IMPORTED_MODEL_URL, window.IMPORTED_MODEL_TYPE)'. The model type is '${(project as any).importedType || 'stl'}'. Do NOT write a loader class from scratch, use the helper.]`;
       }
 
       const code = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imageToUse, project.category);
@@ -359,20 +412,22 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
                     {showModeSelector && (
                         <>
                             <div className="fixed inset-0 z-40" onClick={() => setShowModeSelector(false)} />
-                            <div className="absolute right-0 top-full mt-2 w-48 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden animate-fade-in">
-                                {Object.entries(MODE_CONFIG).map(([key, config]) => (
-                                    <button
-                                        key={key}
-                                        onClick={() => { setWorkspaceMode(key as WorkspaceMode); setShowModeSelector(false); }}
-                                        className={`w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-slate-800 transition-colors border-b border-slate-800 last:border-0 ${workspaceMode === key ? 'bg-slate-800/50' : ''}`}
-                                    >
-                                        <span className="text-xl">{config.icon}</span>
-                                        <div>
-                                            <div className={`text-sm font-semibold ${workspaceMode === key ? 'text-indigo-400' : 'text-slate-200'}`}>{config.label}</div>
-                                        </div>
-                                        {workspaceMode === key && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500 shadow-lg shadow-indigo-500/50"></div>}
-                                    </button>
-                                ))}
+                            <div className="absolute right-0 top-full mt-2 w-48 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden animate-fade-in custom-scrollbar max-h-[80vh] overflow-y-auto">
+                                <div className="py-2">
+                                  {Object.entries(MODE_CONFIG).map(([key, config]) => (
+                                      <button
+                                          key={key}
+                                          onClick={() => { setWorkspaceMode(key as WorkspaceMode); setShowModeSelector(false); }}
+                                          className={`w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-slate-800 transition-colors border-b border-slate-800 last:border-0 ${workspaceMode === key ? 'bg-slate-800/50' : ''}`}
+                                      >
+                                          <span className="text-xl">{config.icon}</span>
+                                          <div>
+                                              <div className={`text-sm font-semibold ${workspaceMode === key ? 'text-indigo-400' : 'text-slate-200'}`}>{config.label}</div>
+                                          </div>
+                                          {workspaceMode === key && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500 shadow-lg shadow-indigo-500/50"></div>}
+                                      </button>
+                                  ))}
+                                </div>
                             </div>
                         </>
                     )}

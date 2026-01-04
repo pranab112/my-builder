@@ -192,6 +192,55 @@ export const injectDriverScript = (html: string) => {
           });
       }
 
+      // --- MODEL LOADER HELPER ---
+      window.loadImportedModel = (url, type) => {
+          return new Promise((resolve, reject) => {
+              let loader;
+              if (type === 'stl') loader = new window.STLLoader();
+              else if (type === 'obj') loader = new window.OBJExporter(); // OBJLoader usually separate, handled below
+              else if (type === 'gltf' || type === 'glb') loader = new window.GLTFLoader();
+              
+              // Handle OBJ specifically if not available in standard map (we need to ensure imports are correct)
+              if (type === 'obj' && !loader) {
+                  // Fallback or error if OBJLoader not imported. 
+                  // For now assume logic is handled by module imports in generated code.
+              }
+
+              if (!loader) {
+                  console.warn("Loader not found for type: " + type);
+                  reject("Loader missing"); 
+                  return;
+              }
+
+              loader.load(url, (geometry) => {
+                  let mesh;
+                  if (geometry.isGeometry || geometry.isBufferGeometry) {
+                      const material = new THREE.MeshStandardMaterial({ color: 0xe0e0e0, roughness: 0.6, metalness: 0.1 });
+                      mesh = new THREE.Mesh(geometry, material);
+                  } else if (geometry.scene) {
+                      mesh = geometry.scene;
+                  }
+                  
+                  // Center and normalize
+                  const box = new THREE.Box3().setFromObject(mesh);
+                  const center = box.getCenter(new THREE.Vector3());
+                  const size = box.getSize(new THREE.Vector3());
+                  const maxDim = Math.max(size.x, size.y, size.z);
+                  
+                  mesh.position.sub(center); // Center at 0,0,0
+                  // Scale to reasonable size (e.g. 10 units)
+                  if (maxDim > 0) {
+                      const scale = 10 / maxDim;
+                      mesh.scale.multiplyScalar(scale);
+                  }
+                  
+                  scene.add(mesh);
+                  window.exportMesh = mesh;
+                  resolve(mesh);
+              }, undefined, reject);
+          });
+      };
+
       // --- EXTERNAL CONTROL LISTENER ---
       window.addEventListener('message', async (event) => {
         if (!event.data) return;
