@@ -26,7 +26,9 @@ export const AnimationMaker: React.FC = () => {
         description: p.description || '',
         category: p.data.category || 'General',
         code: p.data.code || '',
-        date: p.updatedAt
+        date: p.updatedAt,
+        // Optional: Pass imported data if exists
+        importedData: p.data.importedModel 
     }));
 
   // Update projects list when current project code changes
@@ -42,14 +44,18 @@ export const AnimationMaker: React.FC = () => {
             type: 'animation',
             name: updated.name,
             description: updated.description,
-            data: { category: updated.category, code: code }
+            data: { 
+                category: updated.category, 
+                code: code,
+                importedModel: (currentProject as any).importedData // Persist imported data
+            }
         });
     }
   };
 
   const handleStartCreation = () => setView('create-details');
 
-  const handleFinalizeProject = async (name: string, desc: string, category: string) => {
+  const handleFinalizeProject = async (name: string, desc: string, category: string, extraData?: any) => {
     const tempId = crypto.randomUUID();
     const newProject: SavedProject = {
       id: tempId,
@@ -57,7 +63,8 @@ export const AnimationMaker: React.FC = () => {
       description: desc,
       category: category,
       code: '',
-      date: Date.now()
+      date: Date.now(),
+      ...(extraData ? { importedData: extraData.importedModel } : {})
     };
     
     setCurrentProject(newProject);
@@ -68,7 +75,11 @@ export const AnimationMaker: React.FC = () => {
         type: 'animation',
         name: newProject.name,
         description: desc,
-        data: { category, code: '' }
+        data: { 
+            category, 
+            code: '',
+            ...extraData
+        }
     });
 
     setView('builder');
@@ -91,16 +102,28 @@ export const AnimationMaker: React.FC = () => {
   };
 
   const handleImportFile = async (file: File) => {
-      // Simulate creating a project from an imported file
-      // In a real app, this would read the file content and wrap it in a Three.js loader script
-      const name = file.name.split('.')[0] || "Imported Model";
-      const desc = `Imported 3D asset: ${file.name}. This project is set up to view and inspect the imported geometry.`;
-      
-      // We create a new project and act as if we just "loaded" it
-      await handleFinalizeProject(name, desc, "Imported");
+      // 1. Read File
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+          const result = e.target?.result;
+          if (typeof result === 'string') {
+              const name = file.name.split('.')[0] || "Imported Model";
+              // 2. Create Description
+              const ext = file.name.split('.').pop()?.toLowerCase() || 'unknown';
+              const desc = `Imported ${ext.toUpperCase()} model: ${file.name}. Visualize this model in a technical viewport using the appropriate loader.`;
+              
+              // 3. Create Project with Data
+              await handleFinalizeProject(name, desc, "Imported", { 
+                  importedModel: result,
+                  importedType: ext
+              });
+          }
+      };
+      reader.readAsDataURL(file);
   };
 
   const handleCreateFromTemplate = async (template: { name: string, prompt: string, category: string }) => {
+      // Auto-start by appending a flag or just relying on the Builder to see it's a new project
       await handleFinalizeProject(template.name, template.prompt, template.category);
   };
 
@@ -111,9 +134,6 @@ export const AnimationMaker: React.FC = () => {
   };
 
   if (view === 'dashboard') {
-      if (areProjectsLoading && mappedProjects.length === 0) {
-          return <div className="text-center py-20 text-slate-500 animate-pulse">Syncing with Cloud...</div>;
-      }
       return (
           <Dashboard 
             projects={mappedProjects}
@@ -122,6 +142,7 @@ export const AnimationMaker: React.FC = () => {
             onDeleteProject={handleDeleteProject}
             onImport={handleImportFile}
             onCreateFromTemplate={handleCreateFromTemplate}
+            isLoading={areProjectsLoading}
           />
       );
   }
@@ -130,7 +151,7 @@ export const AnimationMaker: React.FC = () => {
       return (
           <Wizard 
              onCancel={handleBackToDashboard}
-             onFinalize={handleFinalizeProject}
+             onFinalize={(n, d, c) => handleFinalizeProject(n, d, c)}
           />
       );
   }
@@ -145,5 +166,5 @@ export const AnimationMaker: React.FC = () => {
       );
   }
 
-  return <div>Loading...</div>;
+  return <div className="p-8 text-center text-slate-500">Initializing...</div>;
 };

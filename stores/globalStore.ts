@@ -1,6 +1,7 @@
 
 import { create } from 'zustand';
 import { backend, User, Project, ProjectType } from '../services/backend';
+import { WorkspaceMode } from '../components/AnimationMaker/types';
 
 interface GlobalState {
   // Auth State
@@ -14,6 +15,7 @@ interface GlobalState {
 
   // Onboarding State
   hasOnboarded: boolean;
+  workspaceMode: WorkspaceMode;
   
   // Actions
   initAuth: () => Promise<void>;
@@ -27,6 +29,7 @@ interface GlobalState {
   deleteProject: (id: string) => Promise<void>;
 
   completeOnboarding: () => void;
+  setWorkspaceMode: (mode: WorkspaceMode) => void;
 }
 
 export const useGlobalStore = create<GlobalState>((set, get) => ({
@@ -37,10 +40,16 @@ export const useGlobalStore = create<GlobalState>((set, get) => ({
   areProjectsLoading: false,
   
   hasOnboarded: localStorage.getItem('proshot_has_onboarded') === 'true',
+  workspaceMode: (localStorage.getItem('proshot_workspace_mode') as WorkspaceMode) || 'designer',
 
   completeOnboarding: () => {
       localStorage.setItem('proshot_has_onboarded', 'true');
       set({ hasOnboarded: true });
+  },
+
+  setWorkspaceMode: (mode) => {
+      localStorage.setItem('proshot_workspace_mode', mode);
+      set({ workspaceMode: mode });
   },
 
   initAuth: async () => {

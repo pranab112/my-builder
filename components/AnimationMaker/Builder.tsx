@@ -2,11 +2,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '../Button';
 import { ImageUpload } from '../ImageUpload';
-import { SavedProject, Tab } from './types';
+import { SavedProject, Tab, WorkspaceMode } from './types';
 import { generateAnimationCode, fixThreeJSCode, enhanceUserPrompt } from '../../services/geminiService';
 import { Panels } from './Panels';
 import { injectDriverScript } from './utils';
 import { useBuilderStore } from '../../stores/builderStore';
+import { useGlobalStore } from '../../stores/globalStore';
 import { CommandPalette } from './CommandPalette';
 import { HelpModal } from './HelpModal';
 import { ViewCube } from './ViewCube';
@@ -17,13 +18,43 @@ interface BuilderProps {
   onUpdateProject: (code: string) => void;
 }
 
+const MODE_CONFIG: Record<WorkspaceMode, { tabs: Tab[], label: string, icon: string }> = {
+  maker: {
+    label: '3D Print',
+    icon: '🖨️',
+    tabs: ['tools', 'print', 'specs', 'export']
+  },
+  engineer: {
+    label: 'CAD / Eng',
+    icon: '⚙️',
+    tabs: ['tools', 'specs', 'export']
+  },
+  designer: {
+    label: 'Product Design',
+    icon: '🎨',
+    tabs: ['tools', 'material', 'environment', 'export']
+  },
+  game_dev: {
+    label: 'Game Assets',
+    icon: '🎮',
+    tabs: ['tools', 'material', 'export']
+  }
+};
+
 export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProject }) => {
   const store = useBuilderStore();
+  const { workspaceMode, setWorkspaceMode } = useGlobalStore();
+  
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [showModeSelector, setShowModeSelector] = useState(false);
+  
+  // OS Detection
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+  const cmdKey = isMac ? 'Cmd' : 'Ctrl';
 
   // --- INIT & SYNC ---
 
@@ -73,6 +104,14 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     }
   }, [store.renderMode, store.showGrid, store.materialConfig, store.activeTab, store.gizmoMode, store.turntableActive, store.clippingValue, store.environment, store.printerPreset, store.slicerLayer]);
 
+  // Ensure active tab is valid for current mode
+  useEffect(() => {
+      const allowedTabs = MODE_CONFIG[workspaceMode].tabs;
+      if (!allowedTabs.includes(store.activeTab)) {
+          store.setActiveTab(allowedTabs[0]);
+      }
+  }, [workspaceMode]);
+
   // --- SHORTCUTS LISTENER ---
   
   const sendViewCommand = (cmd: string) => iframeRef.current?.contentWindow?.postMessage({ type: 'setView', view: cmd }, '*');
@@ -82,9 +121,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-        // Ignore if user is typing in input
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-            // Allow Cmd+K even in inputs to blur and open
             if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
                 e.preventDefault();
                 (e.target as HTMLElement).blur();
@@ -95,26 +132,22 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
         if (store.isCommandPaletteOpen || store.isHelpOpen) return;
 
-        // Command Palette
         if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
             e.preventDefault();
             store.setCommandPaletteOpen(true);
             return;
         }
 
-        // Tools
         if (e.key.toLowerCase() === 'g') store.setGizmoMode('translate');
         if (e.key.toLowerCase() === 'r') store.setGizmoMode('rotate');
         if (e.key.toLowerCase() === 's') store.setGizmoMode('scale');
         if (e.key === 'Escape') store.setGizmoMode('none');
 
-        // Views
         if (e.key === '1') sendViewCommand('front');
         if (e.key === '3') sendViewCommand('side');
         if (e.key === '7') sendViewCommand('top');
         if (e.key === '0') sendViewCommand('center');
 
-        // History
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
             e.preventDefault();
             store.undo();
@@ -124,19 +157,16 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
             store.redo();
         }
 
-        // View Toggles
         if (e.key === ' ') {
             e.preventDefault();
             store.toggleFullScreen();
         }
         
-        // Help
         if (e.key === '?') {
             e.preventDefault();
             store.setHelpOpen(true);
         }
 
-        // Reset/Delete
         if (e.key === 'Delete' || e.key === 'Backspace') {
              if (window.confirm("Clear current project code? This cannot be undone.")) {
                  store.setHtmlCode('', false);
@@ -147,6 +177,23 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [store]);
+
+  // --- HELPER: Inject Imported Model Variable ---
+  const injectContextAndDriver = (html: string) => {
+      let modified = injectDriverScript(html);
+      
+      // If we have an imported model in the project data, inject it as a global var
+      // The store.loadProject puts it into state? No, store only has prompt/code.
+      // We need to access project prop directly or put it in store.
+      // Assuming 'project' prop has it (mapped in AnimationMaker.tsx)
+      const importedData = (project as any).importedData;
+      
+      if (importedData) {
+          const injection = `<script>window.IMPORTED_MODEL_URL = "${importedData}";</script>`;
+          modified = modified.replace('<head>', '<head>' + injection);
+      }
+      return modified;
+  };
 
   // --- ACTIONS ---
 
@@ -164,7 +211,14 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
     try {
       const imageToUse = store.refImages.length > 0 ? store.refImages[0] : undefined;
-      const code = await generateAnimationCode(store.prompt, store.htmlCode || undefined, imageToUse, project.category);
+      
+      // Check if we have imported model context to add to prompt
+      let finalPrompt = store.prompt;
+      if ((project as any).importedData && !store.htmlCode) {
+          finalPrompt += " \n[SYSTEM: An imported model is available at window.IMPORTED_MODEL_URL. Use a Three.js loader (STLLoader, GLTFLoader, OBJLoader) based on the file type to load and display it.]";
+      }
+
+      const code = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imageToUse, project.category);
       
       if (!code || code.length < 50) throw new Error("Generated code seems invalid.");
 
@@ -232,7 +286,6 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
   const handleAppendPrompt = (text: string) => {
     const current = store.prompt.trim();
-    // Add space if needed
     const separator = current && !current.endsWith(' ') ? ' ' : '';
     const next = current ? `${current}${separator}${text}` : text;
     store.setPrompt(next);
@@ -254,6 +307,8 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     { icon: '🏺', label: 'Vase', prompt: 'Create a twisted vase using a lathe geometry.' },
   ];
 
+  const activeModeConfig = MODE_CONFIG[workspaceMode];
+
   return (
     <>
       {store.isCommandPaletteOpen && (
@@ -272,14 +327,56 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
         {/* SIDEBAR INPUT SECTION */}
         <div className={`flex flex-col space-y-6 overflow-y-auto max-h-[calc(100vh-140px)] custom-scrollbar pr-2 transition-all duration-300 ${store.isFullScreen ? 'hidden' : 'lg:col-span-4'}`}>
           <div className="bg-slate-900/50 p-6 rounded-3xl border border-slate-800 shadow-xl backdrop-blur-sm flex flex-col">
-            <div className="flex items-center gap-2 mb-4">
-              <button onClick={onBack} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition-colors">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
-              </button>
-              <div>
-                  <h2 className="text-lg font-semibold text-white">{project.name}</h2>
-                  <span className="text-xs text-emerald-400 font-medium px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20">{project.category}</span>
-              </div>
+            
+            {/* PROJECT HEADER & MODE SELECTOR */}
+            <div className="flex items-center gap-2 mb-4 justify-between">
+                <div className="flex items-center gap-2">
+                    <button onClick={onBack} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition-colors">
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                    </button>
+                    <div>
+                        <h2 className="text-lg font-semibold text-white leading-tight">{project.name}</h2>
+                        <span className="text-xs text-slate-500 font-medium">{project.category}</span>
+                    </div>
+                </div>
+                
+                {/* Workspace Mode Dropdown */}
+                <div className="relative">
+                    <button 
+                        onClick={() => setShowModeSelector(!showModeSelector)}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 border border-slate-700 hover:border-indigo-500/50 rounded-lg transition-all group"
+                    >
+                        <span className="text-lg">{activeModeConfig.icon}</span>
+                        <div className="text-left hidden sm:block">
+                            <div className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Mode</div>
+                            <div className="text-xs font-semibold text-white flex items-center gap-1">
+                                {activeModeConfig.label}
+                                <svg className="w-3 h-3 text-slate-500 group-hover:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                            </div>
+                        </div>
+                    </button>
+
+                    {showModeSelector && (
+                        <>
+                            <div className="fixed inset-0 z-40" onClick={() => setShowModeSelector(false)} />
+                            <div className="absolute right-0 top-full mt-2 w-48 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden animate-fade-in">
+                                {Object.entries(MODE_CONFIG).map(([key, config]) => (
+                                    <button
+                                        key={key}
+                                        onClick={() => { setWorkspaceMode(key as WorkspaceMode); setShowModeSelector(false); }}
+                                        className={`w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-slate-800 transition-colors border-b border-slate-800 last:border-0 ${workspaceMode === key ? 'bg-slate-800/50' : ''}`}
+                                    >
+                                        <span className="text-xl">{config.icon}</span>
+                                        <div>
+                                            <div className={`text-sm font-semibold ${workspaceMode === key ? 'text-indigo-400' : 'text-slate-200'}`}>{config.label}</div>
+                                        </div>
+                                        {workspaceMode === key && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500 shadow-lg shadow-indigo-500/50"></div>}
+                                    </button>
+                                ))}
+                            </div>
+                        </>
+                    )}
+                </div>
             </div>
             
             <div className="flex flex-col gap-4">
@@ -390,7 +487,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
               {store.htmlCode && !store.showCode && (
                 <div className="absolute top-4 left-4 z-20 flex gap-2 flex-wrap max-w-[80%] pointer-events-none">
                     <div className="bg-slate-900/90 rounded-xl border border-slate-700 shadow-xl p-1 flex gap-1 backdrop-blur-md pointer-events-auto">
-                        {(['tools', 'print', 'material', 'environment', 'specs', 'export'] as Tab[]).map(t => (
+                        {activeModeConfig.tabs.map(t => (
                           <button key={t} onClick={() => store.setActiveTab(t)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${store.activeTab === t ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}>{t.charAt(0).toUpperCase() + t.slice(1)}</button>
                         ))}
                     </div>
@@ -413,7 +510,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
                       {/* CMD+K Hint */}
                       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none opacity-50">
-                           <span className="px-2 py-1 bg-slate-900/50 rounded text-[10px] text-slate-400 border border-slate-800">Cmd + K</span>
+                           <span className="px-2 py-1 bg-slate-900/50 rounded text-[10px] text-slate-400 border border-slate-800">{cmdKey} + K</span>
                       </div>
                   </>
               )}
@@ -430,7 +527,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
                             <textarea value={store.codeEdits} onChange={(e) => store.setCodeEdits(e.target.value)} className="flex-1 w-full bg-slate-950 text-emerald-400 font-mono text-xs p-4 resize-none focus:outline-none" spellCheck={false}/>
                         </div>
                       ) : (
-                        <iframe ref={iframeRef} srcDoc={injectDriverScript(store.htmlCode)} title="3D Preview" className="w-full h-full border-0" sandbox="allow-scripts allow-same-origin allow-downloads" />
+                        <iframe ref={iframeRef} srcDoc={injectContextAndDriver(store.htmlCode)} title="3D Preview" className="w-full h-full border-0" sandbox="allow-scripts allow-same-origin allow-downloads" />
                       )}
                       
                       {!store.showCode && (
@@ -458,7 +555,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
                       </div>
 
                       <div className="mt-6 text-sm text-slate-600 font-mono bg-slate-900/50 px-3 py-1 rounded border border-slate-800">
-                          Press <kbd className="text-emerald-500">Cmd+K</kbd> for commands
+                          Press <kbd className="text-emerald-500">{cmdKey}+K</kbd> for commands
                       </div>
                     </div>
                 )}
@@ -471,6 +568,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
                     handleExport={handleExport}
                     sendViewCommand={sendViewCommand}
                     handleAutoOrient={handleAutoOrient}
+                    workspaceMode={workspaceMode}
                 />
             )}
 

@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { useBuilderStore } from '../../stores/builderStore';
-import { PrinterPreset } from './types';
+import { PrinterPreset, WorkspaceMode } from './types';
 import { calculateFilamentCost } from '../../services/geometryCalculator';
 
 interface PanelsProps {
@@ -9,6 +9,7 @@ interface PanelsProps {
   handleExport: (format: string) => void;
   sendViewCommand: (cmd: string) => void;
   handleAutoOrient: () => void;
+  workspaceMode: WorkspaceMode;
 }
 
 const CAD_TOOLS = [
@@ -22,7 +23,7 @@ const CAD_TOOLS = [
   { id: 'cut', label: 'Section', prompt: 'Apply a clipping plane to create a section view. Add a slider to move the plane.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg> },
 ];
 
-export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, sendViewCommand, handleAutoOrient }) => {
+export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, sendViewCommand, handleAutoOrient, workspaceMode }) => {
   const store = useBuilderStore();
   
   const { weight, cost } = store.specs 
@@ -37,10 +38,6 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
 
   const handleToggleRecording = () => {
     store.setIsRecording(!store.isRecording);
-    // Post message logic handled in Builder.tsx effect or here if we have ref, 
-    // but easier to manage state in store and react to it in Builder's effect.
-    // However, Panels triggers simple messages usually.
-    // Let's rely on message passing.
     window.postMessage({ type: store.isRecording ? 'stopRecording' : 'startRecording' }, '*');
   };
 
@@ -57,14 +54,19 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
                    <button onClick={() => store.setGizmoMode('measure')} className={`p-2 rounded ${store.gizmoMode === 'measure' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400'}`} title="Precise Measure"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" /></svg></button>
               </div>
 
-              <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">CAD Modifiers</h4>
-              <div className="grid grid-cols-4 gap-2">
-                 {CAD_TOOLS.map((tool) => (
-                   <button key={tool.id} onClick={() => handleToolClick(tool.prompt)} className="aspect-square flex flex-col items-center justify-center rounded-lg text-slate-400 hover:bg-emerald-600 hover:text-white transition-all bg-slate-800 border border-slate-700 hover:border-emerald-500" title={tool.label}>
-                     {tool.icon}
-                   </button>
-                 ))}
-              </div>
+              {/* HIDE COMPLEX CAD TOOLS FOR MAKERS TO SIMPLIFY UI */}
+              {workspaceMode !== 'maker' && (
+                  <>
+                    <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">CAD Modifiers</h4>
+                    <div className="grid grid-cols-4 gap-2">
+                        {CAD_TOOLS.map((tool) => (
+                        <button key={tool.id} onClick={() => handleToolClick(tool.prompt)} className="aspect-square flex flex-col items-center justify-center rounded-lg text-slate-400 hover:bg-emerald-600 hover:text-white transition-all bg-slate-800 border border-slate-700 hover:border-emerald-500" title={tool.label}>
+                            {tool.icon}
+                        </button>
+                        ))}
+                    </div>
+                  </>
+              )}
               
               <div className="mt-3 pt-2 border-t border-slate-700">
                   <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">Game Dev</h4>

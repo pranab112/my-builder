@@ -1,5 +1,7 @@
 
 import React from 'react';
+import { useGlobalStore } from '../stores/globalStore';
+import { WorkspaceMode } from './AnimationMaker/types';
 
 type Section = 'landing' | 'designer' | 'animation' | 'motion' | 'movie';
 
@@ -8,13 +10,30 @@ interface OnboardingProps {
 }
 
 export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
-  const options = [
+  const { setWorkspaceMode } = useGlobalStore();
+
+  const handleSelection = (target: Section, mode: WorkspaceMode) => {
+      setWorkspaceMode(mode);
+      onComplete(target);
+  };
+
+  const options: {
+      id: string;
+      icon: string;
+      title: string;
+      desc: string;
+      target: Section;
+      mode: WorkspaceMode;
+      color: string;
+      fullWidth?: boolean;
+  }[] = [
     {
       id: 'print',
       icon: '🖨️',
       title: '3D Printing',
       desc: 'I want to make physical objects',
-      target: 'animation' as Section,
+      target: 'animation',
+      mode: 'maker',
       color: 'hover:border-emerald-500 hover:bg-emerald-500/10'
     },
     {
@@ -22,7 +41,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       icon: '🎨',
       title: 'Product Design',
       desc: 'I want beautiful product renders',
-      target: 'designer' as Section,
+      target: 'designer',
+      mode: 'designer',
       color: 'hover:border-indigo-500 hover:bg-indigo-500/10'
     },
     {
@@ -30,7 +50,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       icon: '⚙️',
       title: 'Engineering',
       desc: 'Precise parts & assemblies',
-      target: 'animation' as Section,
+      target: 'animation',
+      mode: 'engineer',
       color: 'hover:border-blue-500 hover:bg-blue-500/10'
     },
     {
@@ -38,7 +59,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       icon: '🎮',
       title: 'Game Assets',
       desc: 'Models for games & real-time 3D',
-      target: 'motion' as Section,
+      target: 'motion',
+      mode: 'game_dev',
       color: 'hover:border-rose-500 hover:bg-rose-500/10'
     },
     {
@@ -46,7 +68,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       icon: '🚀',
       title: 'Just Exploring',
       desc: 'Show me around!',
-      target: 'landing' as Section,
+      target: 'landing',
+      mode: 'designer', // Default
       color: 'hover:border-purple-500 hover:bg-purple-500/10',
       fullWidth: true
     }
@@ -73,7 +96,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
            {options.map((opt) => (
              <button
                key={opt.id}
-               onClick={() => onComplete(opt.target)}
+               onClick={() => handleSelection(opt.target, opt.mode)}
                className={`
                  group relative p-6 rounded-2xl bg-slate-800/50 border border-slate-700 transition-all duration-300 text-left
                  ${opt.color} ${opt.fullWidth ? 'md:col-span-2' : ''}

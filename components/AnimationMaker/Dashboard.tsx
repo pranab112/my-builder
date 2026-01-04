@@ -2,6 +2,7 @@
 import React, { useState, useRef } from 'react';
 import { Button } from '../Button';
 import { SavedProject } from './types';
+import { DashboardSkeleton } from '../Skeleton';
 
 interface DashboardProps {
   projects: SavedProject[];
@@ -10,6 +11,7 @@ interface DashboardProps {
   onDeleteProject: (e: React.MouseEvent, id: string) => void;
   onImport: (file: File) => void;
   onCreateFromTemplate: (template: { name: string, prompt: string, category: string }) => void;
+  isLoading?: boolean;
 }
 
 const STARTER_TEMPLATES = [
@@ -26,7 +28,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onLoadProject, 
   onDeleteProject,
   onImport,
-  onCreateFromTemplate
+  onCreateFromTemplate,
+  isLoading = false
 }) => {
   const [search, setSearch] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -38,8 +41,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      onImport(e.target.files[0]);
+      const file = e.target.files[0];
+      if (file.size > 10 * 1024 * 1024) { // 10MB Limit
+          alert("File is too large (Max 10MB)");
+          return;
+      }
+      onImport(file);
     }
+    e.target.value = ''; // Reset
   };
 
   return (
@@ -77,7 +86,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
           <div className="relative z-10 h-full flex flex-col justify-end">
              <h3 className="text-2xl font-bold text-white mb-1">📥 Import File</h3>
-             <p className="text-slate-400 text-sm">Analyze existing 3D models</p>
+             <p className="text-slate-400 text-sm">STL, OBJ, GLTF (Max 10MB)</p>
           </div>
         </button>
 
@@ -139,7 +148,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
         </div>
 
-        {filteredProjects.length === 0 ? (
+        {isLoading ? (
+            <DashboardSkeleton />
+        ) : filteredProjects.length === 0 ? (
             <div className="text-center py-20 bg-slate-900/30 rounded-3xl border border-dashed border-slate-800">
                 <p className="text-slate-500">No projects found matching your search.</p>
                 {projects.length === 0 && <Button variant="secondary" onClick={onStartCreation} className="mt-4">Create your first project</Button>}

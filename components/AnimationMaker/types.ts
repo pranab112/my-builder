@@ -15,6 +15,7 @@ export type GizmoMode = 'translate' | 'rotate' | 'scale' | 'measure' | 'none';
 export type PrinterPreset = 'ender3' | 'bambu' | 'prusa' | 'custom';
 export type MaterialType = 'pla' | 'petg' | 'abs' | 'tpu';
 export type UnitSystem = 'mm' | 'inch';
+export type WorkspaceMode = 'maker' | 'designer' | 'engineer' | 'game_dev';
 
 export interface CameraBookmark {
   id: string;
