@@ -1,3 +1,4 @@
+
 import { Type } from "@google/genai"; // Keep for Type definitions only
 import { AspectRatio, ImageResolution } from "../types";
 import { backend } from "./backend";
@@ -323,6 +324,9 @@ export const generateAnimationCode = async (prompt: string, previousCode?: strin
        - Import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
        - Import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
        - Import GUI from 'three/addons/libs/lil-gui.module.min.js'.
+       - **NEW**: Import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
+       - **NEW**: Import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+       - **NEW**: Import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
     3. **CAD SCENE SETUP**:
        - Renderer: \`antialias: true, localClippingEnabled: true\`.

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { ViewState, SavedProject } from './AnimationMaker/types';
 import { Dashboard } from './AnimationMaker/Dashboard';
@@ -89,6 +90,20 @@ export const AnimationMaker: React.FC = () => {
     }
   };
 
+  const handleImportFile = async (file: File) => {
+      // Simulate creating a project from an imported file
+      // In a real app, this would read the file content and wrap it in a Three.js loader script
+      const name = file.name.split('.')[0] || "Imported Model";
+      const desc = `Imported 3D asset: ${file.name}. This project is set up to view and inspect the imported geometry.`;
+      
+      // We create a new project and act as if we just "loaded" it
+      await handleFinalizeProject(name, desc, "Imported");
+  };
+
+  const handleCreateFromTemplate = async (template: { name: string, prompt: string, category: string }) => {
+      await handleFinalizeProject(template.name, template.prompt, template.category);
+  };
+
   const handleBackToDashboard = () => {
       setView('dashboard');
       setCurrentProject(null);
@@ -105,6 +120,8 @@ export const AnimationMaker: React.FC = () => {
             onStartCreation={handleStartCreation}
             onLoadProject={handleLoadProject}
             onDeleteProject={handleDeleteProject}
+            onImport={handleImportFile}
+            onCreateFromTemplate={handleCreateFromTemplate}
           />
       );
   }

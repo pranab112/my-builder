@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useGlobalStore } from './stores/globalStore';
 import { Header } from './components/Header';
@@ -7,12 +8,13 @@ import { MotionStudio } from './components/MotionStudio';
 import { MovieMaker } from './components/MovieMaker';
 import { LandingPage } from './components/LandingPage';
 import { AuthPage } from './components/AuthPage';
+import { Onboarding } from './components/Onboarding';
 
 type Section = 'landing' | 'designer' | 'animation' | 'motion' | 'movie';
 
 const ProShotApp: React.FC = () => {
   const [activeSection, setActiveSection] = useState<Section>('landing');
-  const { user, isAuthLoading, initAuth } = useGlobalStore();
+  const { user, isAuthLoading, initAuth, hasOnboarded, completeOnboarding } = useGlobalStore();
 
   useEffect(() => {
     initAuth();
@@ -32,7 +34,19 @@ const ProShotApp: React.FC = () => {
     return <AuthPage onBack={() => setActiveSection('landing')} />;
   }
 
-  // 3. App Shell
+  // 3. Onboarding Guard
+  if (!hasOnboarded) {
+      return (
+        <Onboarding onComplete={(section) => {
+            completeOnboarding();
+            if (section !== 'landing') {
+                setActiveSection(section);
+            }
+        }} />
+      );
+  }
+
+  // 4. App Shell
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       <div className="sticky top-0 z-50">

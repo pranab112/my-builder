@@ -1,3 +1,4 @@
+
 import { create } from 'zustand';
 import { backend, User, Project, ProjectType } from '../services/backend';
 
@@ -10,6 +11,9 @@ interface GlobalState {
   // Projects State
   projects: Project[];
   areProjectsLoading: boolean;
+
+  // Onboarding State
+  hasOnboarded: boolean;
   
   // Actions
   initAuth: () => Promise<void>;
@@ -21,6 +25,8 @@ interface GlobalState {
   loadProjects: (type?: ProjectType) => Promise<void>;
   saveProject: (project: Partial<Project> & { type: ProjectType; name: string; data: any }) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
+
+  completeOnboarding: () => void;
 }
 
 export const useGlobalStore = create<GlobalState>((set, get) => ({
@@ -29,6 +35,13 @@ export const useGlobalStore = create<GlobalState>((set, get) => ({
   authError: null,
   projects: [],
   areProjectsLoading: false,
+  
+  hasOnboarded: localStorage.getItem('proshot_has_onboarded') === 'true',
+
+  completeOnboarding: () => {
+      localStorage.setItem('proshot_has_onboarded', 'true');
+      set({ hasOnboarded: true });
+  },
 
   initAuth: async () => {
     try {
