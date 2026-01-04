@@ -1,3 +1,4 @@
+
 import React, { useCallback, useState } from 'react';
 
 interface ImageUploadProps {
@@ -14,6 +15,7 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
 
     const newImages: string[] = [];
     let processedCount = 0;
+    const totalFiles = files.length;
 
     Array.from(files).forEach((file) => {
       if (file.type.startsWith('image/')) {
@@ -24,8 +26,8 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
           }
           processedCount++;
           
-          // Once all valid images are processed
-          if (processedCount === files.length || processedCount === newImages.length) {
+          // Only trigger when ALL files in the batch have been processed
+          if (processedCount === totalFiles) {
              if (newImages.length > 0) {
                  onImagesChange([...selectedImages, ...newImages]);
              }
@@ -33,7 +35,13 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
         };
         reader.readAsDataURL(file);
       } else {
+        // Non-image files count as processed but aren't added
         processedCount++;
+        if (processedCount === totalFiles) {
+             if (newImages.length > 0) {
+                 onImagesChange([...selectedImages, ...newImages]);
+             }
+        }
       }
     });
   };

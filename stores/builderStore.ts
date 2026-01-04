@@ -20,6 +20,7 @@ const initialState = {
   isGenerating: false,
   isEnhancing: false,
   isFixing: false,
+  autoDebug: false, // New State
   error: null as string | null,
   runtimeError: null as string | null,
   
@@ -71,6 +72,7 @@ interface BuilderState {
   isGenerating: boolean;
   isEnhancing: boolean;
   isFixing: boolean;
+  autoDebug: boolean;
   error: string | null;
   runtimeError: string | null;
   
@@ -120,6 +122,7 @@ interface BuilderState {
   setGenerating: (isGenerating: boolean) => void;
   setEnhancing: (isEnhancing: boolean) => void;
   setFixing: (isFixing: boolean) => void;
+  toggleAutoDebug: () => void;
   setError: (error: string | null) => void;
   setRuntimeError: (error: string | null) => void;
   
@@ -138,12 +141,12 @@ interface BuilderState {
   setSelectedObjectIds: (ids: string[]) => void;
   
   setParameters: (parameters: ParameterControl[]) => void;
-  updateParameter: (name: string, value: any) => void;
+  updateParameter: (name, value) => void;
   
   setBooleanOp: (op: 'union' | 'subtract' | 'intersect' | null) => void;
   setBooleanTarget: (target: string | null) => void;
 
-  setUnits: (units: UnitSystem) => void;
+  setUnits: (units) => void;
   setPrinterPreset: (preset: PrinterPreset) => void;
   setMaterialType: (type: MaterialType) => void;
   setInfillPercentage: (val: number) => void;
@@ -242,6 +245,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   setGenerating: (isGenerating) => set({ isGenerating }),
   setEnhancing: (isEnhancing) => set({ isEnhancing }),
   setFixing: (isFixing) => set({ isFixing }),
+  toggleAutoDebug: () => set((state) => ({ autoDebug: !state.autoDebug })),
   setError: (error) => set({ error }),
   setRuntimeError: (runtimeError) => set({ runtimeError }),
   

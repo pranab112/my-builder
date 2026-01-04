@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { ViewState, SavedProject } from './AnimationMaker/types';
+import { ViewState, SavedProject, WorkspaceMode } from './AnimationMaker/types';
 import { Dashboard } from './AnimationMaker/Dashboard';
 import { Wizard } from './AnimationMaker/Wizard';
 import { Builder } from './AnimationMaker/Builder';
@@ -11,7 +11,7 @@ export const AnimationMaker: React.FC = () => {
   const [view, setView] = useState<ViewState>('dashboard');
   const [currentProject, setCurrentProject] = useState<SavedProject | null>(null);
   
-  const { projects, loadProjects, saveProject, deleteProject, areProjectsLoading } = useGlobalStore();
+  const { projects, loadProjects, saveProject, deleteProject, areProjectsLoading, setWorkspaceMode } = useGlobalStore();
 
   useEffect(() => {
     loadProjects('animation');
@@ -55,7 +55,11 @@ export const AnimationMaker: React.FC = () => {
 
   const handleStartCreation = () => setView('create-details');
 
-  const handleFinalizeProject = async (name: string, desc: string, category: string, extraData?: any) => {
+  const handleFinalizeProject = async (name: string, desc: string, category: string, mode?: WorkspaceMode, extraData?: any) => {
+    if (mode) {
+        setWorkspaceMode(mode);
+    }
+    
     const tempId = crypto.randomUUID();
     const newProject: SavedProject = {
       id: tempId,
@@ -112,8 +116,8 @@ export const AnimationMaker: React.FC = () => {
               const ext = file.name.split('.').pop()?.toLowerCase() || 'unknown';
               const desc = `Imported ${ext.toUpperCase()} model: ${file.name}. Visualize this model in a technical viewport using the appropriate loader.`;
               
-              // 3. Create Project with Data
-              await handleFinalizeProject(name, desc, "Imported", { 
+              // 3. Create Project with Data (Defaulting to 'engineer' or generic mode)
+              await handleFinalizeProject(name, desc, "Imported", 'engineer', { 
                   importedModel: result,
                   importedType: ext
               });
@@ -123,8 +127,8 @@ export const AnimationMaker: React.FC = () => {
   };
 
   const handleCreateFromTemplate = async (template: { name: string, prompt: string, category: string }) => {
-      // Auto-start by appending a flag or just relying on the Builder to see it's a new project
-      await handleFinalizeProject(template.name, template.prompt, template.category);
+      // Use default 'maker' mode for quick templates, or infer
+      await handleFinalizeProject(template.name, template.prompt, template.category, 'maker');
   };
 
   const handleBackToDashboard = () => {
@@ -151,7 +155,7 @@ export const AnimationMaker: React.FC = () => {
       return (
           <Wizard 
              onCancel={handleBackToDashboard}
-             onFinalize={(n, d, c) => handleFinalizeProject(n, d, c)}
+             onFinalize={handleFinalizeProject}
           />
       );
   }

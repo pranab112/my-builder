@@ -41,6 +41,9 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
   const { workspaceMode } = useGlobalStore();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   
+  // Safety mechanism for auto-debug loops
+  const fixAttemptsRef = useRef(0);
+  
   // OS Detection
   const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
   const cmdKey = isMac ? 'Cmd' : 'Ctrl';
@@ -54,6 +57,10 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
   useEffect(() => {
     if (store.htmlCode) {
       onUpdateProject(store.htmlCode);
+      // Reset fix attempts on successful code generation (assuming it works initially)
+      if (!store.runtimeError) {
+          fixAttemptsRef.current = 0;
+      }
     }
   }, [store.htmlCode]);
 
@@ -84,6 +91,22 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  // --- AUTO-DEBUG LOGIC ---
+  useEffect(() => {
+      // If we have an error, auto-debug is ON, and we aren't already fixing...
+      if (store.runtimeError && store.autoDebug && !store.isFixing) {
+          if (fixAttemptsRef.current < 3) {
+              console.log(`🤖 [Auto-Debug] Triggering fix attempt ${fixAttemptsRef.current + 1}/3`);
+              fixAttemptsRef.current += 1;
+              handleAutoFix();
+          } else {
+              store.setError("Auto-debug paused: Too many consecutive errors. Please review the code manually.");
+              store.toggleAutoDebug(); // Turn off safety to prevent infinite loop
+              fixAttemptsRef.current = 0; // Reset for next time user engages
+          }
+      }
+  }, [store.runtimeError, store.autoDebug]);
 
   // Sync Store State to Iframe
   useEffect(() => {
@@ -163,6 +186,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     store.setError(null);
     store.setRuntimeError(null);
     store.setShowCode(false);
+    fixAttemptsRef.current = 0; // Reset fix counter on manual generate
     try {
       const imageToUse = store.refImages.length > 0 ? store.refImages[0] : undefined;
       let finalPrompt = store.prompt;
@@ -189,7 +213,17 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       store.setFixing(true);
       try {
           const fixed = await fixThreeJSCode(store.htmlCode, store.runtimeError);
-          store.setHtmlCode(fixed, true, "Auto-Fix");
+          // When auto-fixing, we update the code. 
+          // Note: The 'useEffect' for htmlCode will clear runtimeError eventually if iframe loads successfully.
+          // But here we must be careful not to loop. The loop is guarded by fixAttemptsRef.
+          store.setHtmlCode(fixed, true, `Auto-Fix: ${store.runtimeError.substring(0, 30)}...`);
+          
+          // DO NOT clear runtimeError here immediately. 
+          // Let the iframe reload; if it succeeds, it wont send an error, and store.runtimeError is cleared by user or new success? 
+          // Actually we rely on the iframe NOT sending an error.
+          // But we should probably clear the old error so the effect doesn't re-fire instantly on same error string.
+          store.setRuntimeError(null); 
+          
       } catch (e) {
           store.setError("Failed to auto-fix.");
       } finally {
@@ -206,7 +240,16 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
   };
 
   const handleApplyCustomCode = () => { store.setHtmlCode(store.codeEdits, true, "Manual Code Edit"); store.setShowCode(false); };
-  const handleToolClick = (toolPrompt: string) => { store.setPrompt(toolPrompt); };
+  
+  // FIXED: Auto-trigger generation for CAD Tools to make them responsive
+  const handleToolClick = (toolPrompt: string) => { 
+      const context = store.selectedObjectIds.length > 0 ? ` on selected object` : ``;
+      store.setPrompt(`${toolPrompt}${context}`);
+      if (store.htmlCode) {
+          // If we already have code, treat this as a quick action
+          setTimeout(handleGenerate, 100);
+      }
+  };
 
   const handleDownload = () => {
     if (!store.htmlCode) return;

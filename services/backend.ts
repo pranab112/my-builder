@@ -85,17 +85,32 @@ const setCachedResponse = (key: string, data: any) => {
     }
 };
 
-// --- GLOBAL RATE LIMITER ---
+// --- GLOBAL RATE LIMITER (Queue-based) ---
 let lastRequestTime = 0;
-const MIN_REQUEST_INTERVAL = 3000; // 3 seconds between AI calls
+// We chain promises to ensure strict serialization of AI requests
+let rateLimitQueue = Promise.resolve();
+const MIN_REQUEST_INTERVAL = 2000; // 2 seconds between AI calls to stay safe
 
-const checkGlobalRateLimit = () => {
-    const now = Date.now();
-    if (now - lastRequestTime < MIN_REQUEST_INTERVAL) {
-        const wait = Math.ceil((MIN_REQUEST_INTERVAL - (now - lastRequestTime)) / 1000);
-        throw new Error(`Please wait ${wait}s before generating again.`);
-    }
-    lastRequestTime = now;
+const waitForRateLimit = async () => {
+    // Chain this request to the end of the queue
+    const nextRequest = rateLimitQueue.then(async () => {
+        const now = Date.now();
+        const timeSinceLast = now - lastRequestTime;
+        
+        if (timeSinceLast < MIN_REQUEST_INTERVAL) {
+            const waitTime = MIN_REQUEST_INTERVAL - timeSinceLast;
+            // console.log(`[Rate Limit] Queueing for ${waitTime}ms...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+        
+        lastRequestTime = Date.now();
+    });
+
+    // Update the queue tail so the next caller waits for us
+    rateLimitQueue = nextRequest;
+    
+    // Wait for our turn
+    await nextRequest;
 };
 
 
@@ -187,11 +202,13 @@ class LocalBackend implements BackendService {
 
   ai = {
       generateContent: async (params: any): Promise<any> => {
-          checkGlobalRateLimit();
-          
+          // Check cache FIRST to avoid unnecessary waiting
           const cacheKey = getCacheKey(params);
           const cached = getCachedResponse(cacheKey);
           if (cached) return cached;
+
+          // If not cached, apply rate limit
+          await waitForRateLimit();
 
           // In MOCK mode, we still access env variable, or fail if missing.
           const apiKey = process.env.API_KEY;
@@ -324,11 +341,13 @@ class SupabaseBackendImpl implements BackendService {
 
   ai = {
       generateContent: async (params: any) => {
-          checkGlobalRateLimit();
-          
+          // Check cache FIRST
           const cacheKey = getCacheKey(params);
           const cached = getCachedResponse(cacheKey);
           if (cached) return cached;
+
+          // Apply rate limit queue
+          await waitForRateLimit();
 
           const { data, error } = await this.supabase.functions.invoke('ai-proxy', {
               body: params

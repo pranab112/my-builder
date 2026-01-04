@@ -1,447 +1,505 @@
 
 export const injectDriverScript = (html: string) => {
-    // Content Security Policy
-    const cspMeta = `
-    <meta http-equiv="Content-Security-Policy" content="
-      default-src 'none';
-      script-src 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://esm.sh https://cdn.jsdelivr.net blob:;
-      style-src 'unsafe-inline' https://fonts.googleapis.com;
-      font-src https://fonts.gstatic.com;
-      img-src 'self' data: blob: https:;
-      connect-src 'self' https://unpkg.com https://esm.sh https://cdn.jsdelivr.net https://dl.polyhaven.org blob: data:;
-      object-src 'none';
-      base-uri 'none';
-    ">`;
-
-    // Inject import map for fflate if it doesn't exist in generated code (it likely doesn't)
+    // 1. ROBUST IMPORT MAP (Pinned versions for stability)
+    // Using unpkg for three.js builds as they are consistent for these examples
     const importMap = `
     <script type="importmap">
     {
       "imports": {
-        "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/",
-        "fflate": "https://esm.sh/fflate@^0.8.2"
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "three-bvh-csg": "https://unpkg.com/three-bvh-csg@0.0.16/build/index.module.js"
       }
     }
     </script>
     `;
 
+    // 2. V2 DRIVER SCRIPT
     const driverScript = `
     <script type="module">
       import * as THREE from 'three';
       import { TransformControls } from 'three/addons/controls/TransformControls.js';
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
       import { STLExporter } from 'three/addons/exporters/STLExporter.js';
       import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-      import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
-      import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
-      import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
       import { STLLoader } from 'three/addons/loaders/STLLoader.js';
       import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-      import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
-      import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
-      import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+      import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
       import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
       import { SUBTRACTION, ADDITION, INTERSECTION, Brush, Evaluator } from 'three-bvh-csg';
-      import * as fflate from 'fflate';
 
-      // --- GUI INTERCEPTION SHIM ---
-      class MockGUI {
-          constructor() {
-              this.controllers = [];
+      window.THREE = THREE;
+      
+      // --- STATE ---
+      let transformControl;
+      let selectedIds = [];
+      let csgEvaluator;
+      const guiControllers = new Map(); // Maps property names to controller objects
+      let clippingPlane;
+      
+      // --- SYSTEM: SCENE SNIFFER ---
+      const _render = THREE.WebGLRenderer.prototype.render;
+      THREE.WebGLRenderer.prototype.render = function(scene, camera) {
+          if (!window.scene) {
+              console.log("⚡ [ProShot Driver] Auto-detected Scene & Camera");
+              window.scene = scene;
+              window.camera = camera;
+              window.renderer = this;
+              
+              // Ensure we have a dark background if none set
+              if (!scene.background) scene.background = new THREE.Color(0x111827);
+              
+              // Enable Shadows if not already
+              this.shadowMap.enabled = true;
+              this.shadowMap.type = THREE.PCFSoftShadowMap;
+              this.localClippingEnabled = true;
+
+              // Force Controls Damping for "Alive" feel
+              if (window.controls) {
+                  window.controls.enableDamping = true;
+                  window.controls.dampingFactor = 0.05;
+                  window.controls.autoRotateSpeed = 2.0;
+              }
+              
+              // Ensure we have LIGHTS if none set (Common AI failure)
+              let hasLights = false;
+              scene.traverse(obj => { if(obj.isLight) hasLights = true; });
+              if (!hasLights) {
+                  console.log("⚡ [ProShot Driver] Auto-injecting Lights");
+                  const amb = new THREE.AmbientLight(0xffffff, 0.5);
+                  const dir = new THREE.DirectionalLight(0xffffff, 1);
+                  dir.position.set(5, 10, 7);
+                  dir.castShadow = true;
+                  scene.add(amb);
+                  scene.add(dir);
+              }
+
+              initTools();
+          }
+          _render.apply(this, arguments);
+      };
+
+      function initTools() {
+          if (document.getElementById('driver-initialized')) return;
+          const m = document.createElement('div'); m.id = 'driver-initialized'; document.body.appendChild(m);
+
+          // 1. Setup Gizmos
+          transformControl = new TransformControls(window.camera, window.renderer.domElement);
+          transformControl.addEventListener('dragging-changed', (event) => {
+              if (window.controls) window.controls.enabled = !event.value;
+          });
+          window.scene.add(transformControl);
+
+          // 2. Setup CSG
+          csgEvaluator = new Evaluator();
+          csgEvaluator.attributes = ['position', 'normal'];
+          csgEvaluator.useGroups = false; 
+          
+          // 3. Setup Clipping Plane (Hidden by default)
+          clippingPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 100);
+          // We don't apply it globally yet, user must enable it
+
+          // 4. Start Loop
+          setInterval(broadcastSceneGraph, 500); // Faster polling for responsiveness
+          broadcastSceneGraph();
+      }
+
+      // --- SYSTEM: SMART GUI PROXY ---
+      // This allows the React UI to control the Three.js variables defined by the AI
+      window.GUI = class {
+          constructor() { 
+              this.controllers = []; 
               this.folders = [];
           }
-          add(obj, prop, min, max, step) {
-              const type = typeof obj[prop] === 'boolean' ? 'boolean' : 'number';
-              const ctrl = { object: obj, property: prop, min, max, step, type, name: prop };
-              this.controllers.push(ctrl);
-              this.sync();
-              return {
-                  name: (n) => { ctrl.name = n; this.sync(); return this; },
-                  onChange: (fn) => { ctrl.onChange = fn; return this; }
+          
+          add(object, property, min, max, step) {
+              const ctrl = {
+                  object,
+                  property,
+                  min: min || 0,
+                  max: max || 100,
+                  step: step || 1,
+                  type: typeof object[property] === 'boolean' ? 'boolean' : 'number',
+                  onChangeCallback: null,
+                  
+                  // Chaining methods
+                  name: function(n) { this._name = n; return this; },
+                  onChange: function(fn) { this.onChangeCallback = fn; return this; },
+                  listen: function() { return this; }
               };
-          }
-          addColor(obj, prop) {
-              const ctrl = { object: obj, property: prop, type: 'color', name: prop };
+              
+              // Register for React to find
+              guiControllers.set(property, ctrl);
               this.controllers.push(ctrl);
-              this.sync();
-              return {
-                  name: (n) => { ctrl.name = n; this.sync(); return this; },
-                  onChange: (fn) => { ctrl.onChange = fn; return this; }
+              
+              // Debounce sync to React
+              if(this.syncTimer) clearTimeout(this.syncTimer);
+              this.syncTimer = setTimeout(() => this.syncToParent(), 200);
+              
+              return ctrl;
+          }
+
+          addColor(object, property) {
+              const ctrl = {
+                  object, property, type: 'color', onChangeCallback: null,
+                  name: function(n) { this._name = n; return this; },
+                  onChange: function(fn) { this.onChangeCallback = fn; return this; }
               };
+              guiControllers.set(property, ctrl);
+              this.controllers.push(ctrl);
+              setTimeout(() => this.syncToParent(), 200);
+              return ctrl;
           }
-          addFolder(name) {
-              const folder = new MockGUI();
-              folder.name = name;
-              this.folders.push(folder);
-              return folder;
+          
+          addFolder(name) { return new window.GUI(); } // Flatten folders for simplicity
+          
+          syncToParent() {
+              const payload = this.controllers.map(c => ({
+                  name: c.property,
+                  value: c.object[c.property],
+                  min: c.min, max: c.max, step: c.step,
+                  type: c.type
+              }));
+              window.parent.postMessage({ type: 'guiConfig', controls: payload }, '*');
           }
-          sync() {
-              if(this.syncTimeout) clearTimeout(this.syncTimeout);
-              this.syncTimeout = setTimeout(() => {
-                  const serialize = (gui, folderName = '') => {
-                      let ctrls = gui.controllers.map(c => ({
-                          name: c.name,
-                          value: c.object[c.property],
-                          min: c.min,
-                          max: c.max,
-                          step: c.step,
-                          type: c.type,
-                          folder: folderName
-                      }));
-                      gui.folders.forEach(f => {
-                          ctrls = ctrls.concat(serialize(f, f.name));
-                      });
-                      return ctrls;
-                  };
-                  window.parent.postMessage({ type: 'guiConfig', controls: serialize(this) }, '*');
-              }, 100);
-          }
-      }
-      window.GUI = MockGUI;
-      window.lil = { GUI: MockGUI };
-
-      // --- 3MF EXPORT LOGIC ---
-      window.export3MF = async () => {
-          // 1. Collect Geometries
-          const meshes = [];
-          window.scene.traverse(c => {
-              if (c.isMesh && c.name !== 'measureMarker' && !c.type.includes('Helper')) {
-                  meshes.push(c);
-              }
-          });
-
-          if (meshes.length === 0) return;
-
-          // 2. Build 3D Model XML
-          let verticesXml = '';
-          let trianglesXml = '';
-          let vCount = 0;
-
-          // Simple merger for single object export
-          meshes.forEach(mesh => {
-              const geo = mesh.geometry.clone();
-              geo.applyMatrix4(mesh.matrixWorld);
-              if (!geo.index) {
-                  // Ensure indexed geometry
-                  const temp = BufferGeometryUtils.mergeVertices(geo);
-                  if (temp) { geo.dispose(); Object.assign(geo, temp); }
-              }
-              const pos = geo.attributes.position;
-              const idx = geo.index;
-
-              if (pos && idx) {
-                  for (let i = 0; i < pos.count; i++) {
-                      verticesXml += \`<vertex x="\${pos.getX(i)}" y="\${pos.getY(i)}" z="\${pos.getZ(i)}" />\`;
-                  }
-                  for (let i = 0; i < idx.count; i += 3) {
-                      trianglesXml += \`<triangle v1="\${idx.getX(i) + vCount}" v2="\${idx.getX(i+1) + vCount}" v3="\${idx.getX(i+2) + vCount}" />\`;
-                  }
-                  vCount += pos.count;
-              }
-          });
-
-          const modelXml = \`<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
- <resources>
-  <object id="1" type="model">
-   <mesh>
-    <vertices>
-     \${verticesXml}
-    </vertices>
-    <triangles>
-     \${trianglesXml}
-    </triangles>
-   </mesh>
-  </object>
- </resources>
- <build>
-  <item objectid="1" />
- </build>
-</model>\`;
-
-          // 3. Build content types and rels
-          const contentTypes = \`<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
- <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
- <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />
-</Types>\`;
-
-          const rels = \`<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
- <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" />
-</Relationships>\`;
-
-          // 4. Zip it
-          const zipData = fflate.zipSync({
-              '[Content_Types].xml': fflate.strToU8(contentTypes),
-              '_rels/.rels': fflate.strToU8(rels),
-              '3D/3dmodel.model': fflate.strToU8(modelXml)
-          });
-
-          // 5. Download
-          const blob = new Blob([zipData], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = 'model.3mf';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
       };
 
-      // --- WEB WORKER DEFINITION (Keep existing) ---
-      const workerCode = \`
-        import * as THREE from 'https://unpkg.com/three@0.170.0/build/three.module.js';
-        import { SimplifyModifier } from 'https://unpkg.com/three@0.170.0/examples/jsm/modifiers/SimplifyModifier.js';
-        import * as BufferGeometryUtils from 'https://unpkg.com/three@0.170.0/examples/jsm/utils/BufferGeometryUtils.js';
-
-        self.onmessage = (e) => {
-            const { id, type, position, index, params } = e.data;
-            try {
-                const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
-                if (index) geometry.setIndex(new THREE.Uint32BufferAttribute(index, 1));
-                let resultGeo = geometry;
-                if (type === 'decimate') {
-                    const modifier = new SimplifyModifier();
-                    const targetCount = Math.floor(geometry.attributes.position.count * params.percent);
-                    if (targetCount > 0) {
-                        const simplified = modifier.modify(geometry, targetCount); 
-                        if (simplified) resultGeo = simplified;
-                    }
-                } else if (type === 'repair') {
-                    resultGeo = BufferGeometryUtils.mergeVertices(geometry, 0.001);
-                    resultGeo.computeVertexNormals();
-                }
-                const resPosition = resultGeo.attributes.position.array;
-                const resIndex = resultGeo.index ? resultGeo.index.array : null;
-                const resNormal = resultGeo.attributes.normal ? resultGeo.attributes.normal.array : null;
-                const transferables = [resPosition.buffer];
-                if (resIndex) transferables.push(resIndex.buffer);
-                if (resNormal) transferables.push(resNormal.buffer);
-                self.postMessage({ id, status: 'success', position: resPosition, index: resIndex, normal: resNormal }, transferables);
-            } catch (err) { self.postMessage({ id, status: 'error', message: err.message }); }
-        };
-      \`;
-
-      // Init Worker (Keep existing)
-      const blob = new Blob([workerCode], { type: 'application/javascript' });
-      const workerUrl = URL.createObjectURL(blob);
-      const worker = new Worker(workerUrl, { type: 'module' });
-      const workerCallbacks = new Map();
-      worker.onmessage = (e) => {
-          const { id, status, position, index, normal, message } = e.data;
-          const callback = workerCallbacks.get(id);
-          if (callback) {
-              if (status === 'success') callback.resolve({ position, index, normal });
-              else callback.reject(message);
-              workerCallbacks.delete(id);
-          }
-      };
-      function runWorkerTask(type, geometry, params = {}) {
-          return new Promise((resolve, reject) => {
-              const id = crypto.randomUUID();
-              workerCallbacks.set(id, { resolve, reject });
-              const position = geometry.attributes.position.array;
-              const index = geometry.index ? geometry.index.array : null;
-              worker.postMessage({ id, type, position: position.slice(0), index: index ? index.slice(0) : null, params });
+      // --- IMPORT LOADER HELPER ---
+      window.loadImportedModel = function(url, type) {
+          console.log("Loading imported model:", type);
+          const loader = type === 'stl' ? new STLLoader() 
+                       : type === 'obj' ? new OBJLoader() 
+                       : new GLTFLoader();
+          
+          loader.load(url, (result) => {
+              let mesh;
+              if (result.isBufferGeometry) {
+                  // STL
+                  mesh = new THREE.Mesh(result, new THREE.MeshStandardMaterial({color: 0xcccccc}));
+              } else if (result.scene) {
+                  // GLTF
+                  mesh = result.scene;
+              } else {
+                  // OBJ
+                  mesh = result;
+              }
+              
+              // Normalize Scale
+              const box = new THREE.Box3().setFromObject(mesh);
+              const size = new THREE.Vector3();
+              box.getSize(size);
+              const maxDim = Math.max(size.x, size.y, size.z);
+              if (maxDim > 0) {
+                  const scale = 5 / maxDim; // Fit to 5 unit box
+                  mesh.scale.setScalar(scale);
+              }
+              
+              mesh.name = "Imported_Model";
+              window.scene.add(mesh);
+              selectObjects([mesh.uuid]);
           });
+      };
+
+      // --- UTILS ---
+      function getObjectById(id) { return window.scene.getObjectByProperty('uuid', id); }
+
+      function selectObjects(ids) {
+          selectedIds = ids || [];
+          transformControl.detach();
+          if (selectedIds.length > 0) {
+              const obj = getObjectById(selectedIds[0]);
+              if (obj) {
+                  transformControl.attach(obj);
+              }
+          }
+          broadcastSceneGraph();
       }
 
-      // --- EXPOSE TO WINDOW ---
-      window.THREE = THREE;
-      window.TransformControls = TransformControls;
-      // ... (Keep other exports)
-      window.STLExporter = STLExporter;
-      window.GLTFExporter = GLTFExporter;
-      window.OBJExporter = OBJExporter;
-      window.USDZExporter = USDZExporter;
-      window.OBJLoader = OBJLoader;
-      window.STLLoader = STLLoader;
-      window.GLTFLoader = GLTFLoader;
-      window.SimplifyModifier = SimplifyModifier;
-      window.RGBELoader = RGBELoader;
-      window.CSS2DRenderer = CSS2DRenderer;
-      window.CSS2DObject = CSS2DObject;
-      window.BufferGeometryUtils = BufferGeometryUtils;
-      window.CSG = { SUBTRACTION, ADDITION, INTERSECTION, Brush, Evaluator };
+      function broadcastSceneGraph() {
+          if (!window.scene) return;
+          const nodes = [];
+          window.scene.traverse((obj) => {
+              // Filter out internal tools
+              if (obj.isMesh && obj !== transformControl && obj.name !== 'TransformControlsPlane' && !obj.userData.isGizmo) {
+                  nodes.push({
+                      id: obj.uuid,
+                      name: obj.name || 'Untitled Mesh',
+                      type: obj.geometry.type,
+                      visible: obj.visible,
+                      selected: selectedIds.includes(obj.uuid)
+                  });
+              }
+          });
+          window.parent.postMessage({ type: 'sceneGraphUpdate', graph: nodes }, '*');
+      }
 
-      // --- STATE & GLOBALS (Keep existing) ---
-      window.isTurntableActive = false;
-      let renderRequested = false;
-      let transformControl = null;
-      let cssRenderer = null;
-      let clipPlane = null; 
-      let slicerPlane = null;
-      let bedHelper = null;
-      let measureState = { active: false, points: [], markers: [], line: null, label: null, units: 'mm', snap: null };
-      let supportMesh = null;
-      let selectedObjects = []; 
-      let updateGraphTimeout = null;
-      let lodEnabled = true;
-      let globalGui = null;
+      // --- EDITING COMMANDS ---
 
-      // ... (Keep generateLOD, onerror, requestRender, render, disposeNode, updateSceneGraph, selectObject, getMainMesh, convertUnits, initMeasureTool, addMeasurePoint, clearMeasure, repairMesh, performBoolean, addPrimitive, generateSupports, applyDecimation, loadImportedModel)
-      
-      // Paste the huge block of existing functions here or ensure they are preserved. 
-      // Since I am rewriting the full file content, I must include them.
-      // I will condense for brevity but ensure functionality is there.
-
-      // --- SKETCH EXTRUSION LOGIC ---
-      window.extrudeSketch = (points, height) => {
-          if(!points || points.length < 3) return;
-          
-          const shape = new THREE.Shape();
-          shape.moveTo(points[0].x, points[0].y);
-          for(let i=1; i<points.length; i++) {
-              shape.lineTo(points[i].x, points[i].y);
+      function addPrimitive(type) {
+          let geo, mat = new THREE.MeshStandardMaterial({ color: 0x6366f1, roughness: 0.4, metalness: 0.1 });
+          const size = 2;
+          switch(type) {
+              case 'box': geo = new THREE.BoxGeometry(size, size, size); break;
+              case 'sphere': geo = new THREE.SphereGeometry(size/2, 32, 32); break;
+              case 'cylinder': geo = new THREE.CylinderGeometry(size/2, size/2, size, 32); break;
+              case 'plane': geo = new THREE.PlaneGeometry(size, size); mat.side = THREE.DoubleSide; break;
+              default: return;
           }
-          shape.closePath();
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.name = type.charAt(0).toUpperCase() + type.slice(1) + '_' + Math.floor(Math.random()*100);
+          mesh.position.set(0, size/2, 0);
           
-          const extrudeSettings = {
-              steps: 2,
-              depth: height,
-              bevelEnabled: true,
-              bevelThickness: 0.2,
-              bevelSize: 0.1,
-              bevelOffset: 0,
-              bevelSegments: 3
-          };
-          
-          const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-          // Rotate to sit on XZ plane
-          geometry.rotateX(Math.PI / 2);
-          geometry.center();
-          
-          const material = new THREE.MeshStandardMaterial({ color: 0x6366f1, roughness: 0.5 });
-          const mesh = new THREE.Mesh(geometry, material);
-          mesh.name = "Extruded Sketch";
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
+          // Place in front of camera if possible
+          if (window.controls && window.controls.target) {
+             mesh.position.copy(window.controls.target);
+          }
           
           window.scene.add(mesh);
-          updateSceneGraph();
-          selectObject(mesh.uuid);
-          requestRender();
+          selectObjects([mesh.uuid]);
       }
 
-      window.addEventListener('message', async (event) => {
-        if (!event.data) return;
-        // ... (Keep existing handlers)
-        const { type, mode, visible, config, view, format, active, value, env, preset, percent, units, level, bookmark, objectId, op, targetId, toolId, primType, lod, name } = event.data;
-        
-        if (!window.scene) return;
-        
-        if (!transformControl && window.TransformControls) {
-            transformControl = new window.TransformControls(camera, renderer.domElement);
-            transformControl.addEventListener('dragging-changed', function (event) { if(window.controls) window.controls.enabled = !event.value; requestRender(); });
-            transformControl.addEventListener('change', requestRender);
-            scene.add(transformControl);
-            initMeasureTool();
-        }
-        
-        // ... (Rest of handlers)
-        if (type === 'performBoolean') window.performBoolean(op, targetId, toolId);
-        if (type === 'addPrimitive') window.addPrimitive(primType);
-        if (type === 'setUnits') { measureState.units = units; requestRender(); }
-        if (type === 'selectObject') selectObject(objectId);
-        if (type === 'setGizmoMode') {
-            if (transformControl) {
-                if (mode === 'measure') { transformControl.detach(); measureState.active = true; } 
-                else {
-                    measureState.active = false; clearMeasure();
-                    if (mode === 'none') transformControl.detach();
-                    else {
-                        if (selectedObjects.length > 0) {
-                            let obj = window.scene.getObjectByProperty('uuid', selectedObjects[0]);
-                            if (obj) transformControl.attach(obj);
-                        } else {
-                            const mesh = getMainMesh();
-                            if (mesh) transformControl.attach(mesh);
-                        }
-                        transformControl.setMode(mode);
-                    }
-                }
-                requestRender();
-            }
-        }
-        if (type === 'toggleGrid') { window.scene.children.forEach(c => { if (c.type === 'GridHelper') c.visible = visible; }); requestRender(); }
-        if (type === 'setClipping') { if (clipPlane) { clipPlane.constant = value; requestRender(); } }
-        if (type === 'toggleSupports') { if (supportMesh) { scene.remove(supportMesh); disposeNode(supportMesh); supportMesh = null; } if (active) generateSupports(); requestRender(); }
-        if (type === 'repairMesh') repairMesh();
-        if (type === 'decimate') applyDecimation(level);
-        if (type === 'setEnvironment') { /* ... */ requestRender(); }
-        if (type === 'setView') {
-             const dist = 10;
-             if (view === 'top') { camera.position.set(0, dist, 0); camera.lookAt(0,0,0); }
-             if (view === 'front') { camera.position.set(0, 0, dist); camera.lookAt(0,0,0); }
-             if (view === 'side') { camera.position.set(dist, 0, 0); camera.lookAt(0,0,0); }
-             if (view === 'iso') { camera.position.set(8, 8, 8); camera.lookAt(0,0,0); }
-             requestRender();
-        }
-        if (type === 'setLOD') { lodEnabled = active; window.parent.postMessage({ type: 'log', message: 'LOD System ' + (active ? 'Enabled' : 'Disabled') }, '*'); }
-        
-        // NEW HANDLERS
-        if (type === 'updateParam') {
-            if (window.params && window.params[name] !== undefined) {
-                window.params[name] = value;
-                if (window.regenerate) window.regenerate();
-                requestRender();
-            }
-        }
-        if (type === 'extrudeSketch') {
-            window.extrudeSketch(event.data.points, event.data.height);
-        }
-        // Export Handlers
-        if (type === 'exportModel') {
-            if (format === '3mf') window.export3MF();
-            else if (format === 'stl') {
-                const exporter = new window.STLExporter();
-                const result = exporter.parse(window.scene);
-                const blob = new Blob([result], { type: 'text/plain' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = 'model.stl';
-                link.click();
-            } else if (format === 'gltf') {
-                const exporter = new window.GLTFExporter();
-                exporter.parse(window.scene, (gltf) => {
-                    const output = JSON.stringify(gltf, null, 2);
-                    const blob = new Blob([output], { type: 'text/plain' });
-                    const link = document.createElement('a');
-                    link.href = URL.createObjectURL(blob);
-                    link.download = 'model.gltf';
-                    link.click();
-                }, { binary: false });
-            } else if (format === 'usdz') {
-                // Simplified USDZ trigger
-                const exporter = new window.USDZExporter();
-                exporter.parse(window.scene).then((usdz) => {
-                    const blob = new Blob([usdz], { type: 'application/octet-stream' });
-                    const link = document.createElement('a');
-                    link.href = URL.createObjectURL(blob);
-                    link.download = 'model.usdz';
-                    link.click();
-                });
-            }
-        }
-      });
-      
-      window.animate = function() { requestRender(); };
-      if (window.renderer) {
-          window.renderer.localClippingEnabled = true;
-          clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
-          slicerPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 100);
+      function performBoolean(op, targetId, toolId) {
+          const t = getObjectById(targetId);
+          const o = getObjectById(toolId);
+          if (!t || !o) return;
+
+          // Preserve original material
+          const originalMat = t.material.clone();
+
+          const b1 = new Brush(t.geometry, t.material);
+          const b2 = new Brush(o.geometry, o.material);
+          
+          // Sync transforms
+          b1.updateMatrixWorld(); b2.updateMatrixWorld();
+          b1.position.copy(t.position); b1.quaternion.copy(t.quaternion); b1.scale.copy(t.scale);
+          b2.position.copy(o.position); b2.quaternion.copy(o.quaternion); b2.scale.copy(o.scale);
+          b1.updateMatrixWorld(); b2.updateMatrixWorld();
+
+          let res;
+          if (op === 'union') res = csgEvaluator.evaluate(b1, b2, ADDITION);
+          else if (op === 'subtract') res = csgEvaluator.evaluate(b1, b2, SUBTRACTION);
+          else if (op === 'intersect') res = csgEvaluator.evaluate(b1, b2, INTERSECTION);
+
+          if (res) {
+              res.material = originalMat; // Restore material
+              res.name = t.name; // Keep name
+              
+              // Clean up inputs
+              t.geometry.dispose();
+              o.geometry.dispose();
+              window.scene.remove(t);
+              window.scene.remove(o);
+              
+              window.scene.add(res);
+              // CRITICAL: Immediately select the new object to keep UI in sync
+              selectObjects([res.uuid]);
+          }
       }
-      setTimeout(() => { updateSceneGraph(); requestRender(); }, 1000);
+
+      function cleanExport(format) {
+          // 1. Clone scene to filter out helpers/gizmos
+          const exportGroup = new THREE.Group();
+          window.scene.traverse(obj => {
+              if (obj.isMesh && obj.visible && obj.name !== 'TransformControlsPlane' && !obj.userData.isGizmo) {
+                  const clone = obj.clone();
+                  // Apply world transform to local so export is accurate
+                  clone.position.setFromMatrixPosition(obj.matrixWorld);
+                  clone.quaternion.setFromRotationMatrix(obj.matrixWorld);
+                  clone.scale.setFromMatrixScale(obj.matrixWorld);
+                  exportGroup.add(clone);
+              }
+          });
+
+          if (exportGroup.children.length === 0) {
+              alert("Nothing to export! Scene is empty.");
+              return;
+          }
+
+          if (format === 'stl') {
+              const exporter = new STLExporter();
+              const result = exporter.parse(exportGroup);
+              const blob = new Blob([result], { type: 'text/plain' });
+              downloadBlob(blob, 'model.stl');
+          } else if (format === 'gltf') {
+              const exporter = new GLTFExporter();
+              exporter.parse(exportGroup, (gltf) => {
+                  const blob = new Blob([JSON.stringify(gltf)], { type: 'text/plain' });
+                  downloadBlob(blob, 'model.gltf');
+              });
+          }
+          
+          // Cleanup
+          exportGroup.clear();
+      }
+
+      function downloadBlob(blob, filename) {
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = filename;
+          link.click();
+          window.parent.postMessage({ type: 'exportComplete' }, '*');
+      }
+
+      function updateMaterial(config) {
+          if (selectedIds.length === 0) return;
+          const obj = getObjectById(selectedIds[0]);
+          if (obj && obj.material) {
+              obj.material.color.set(config.color);
+              obj.material.metalness = config.metalness;
+              obj.material.roughness = config.roughness;
+              obj.material.wireframe = config.wireframe;
+              obj.material.needsUpdate = true;
+          }
+      }
+
+      function extrudeSketch(points, height) {
+          if (!points || points.length < 3) return;
+          const shape = new THREE.Shape();
+          
+          // Scale factor (canvas is 20x20, let's map roughly to world units)
+          const scale = 1.0; 
+          
+          shape.moveTo(points[0].x * scale, points[0].y * scale);
+          for (let i = 1; i < points.length; i++) shape.lineTo(points[i].x * scale, points[i].y * scale);
+          shape.closePath();
+          
+          const geometry = new THREE.ExtrudeGeometry(shape, { steps: 1, depth: height, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2 });
+          geometry.rotateX(Math.PI / 2); // Flip to lay flat
+          geometry.center();
+          
+          const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3 }));
+          mesh.name = "Extruded_Shape";
+          mesh.position.y = height / 2;
+          
+          window.scene.add(mesh);
+          selectObjects([mesh.uuid]);
+      }
+
+      // --- MAIN MESSAGE LISTENER ---
+      window.addEventListener('message', (event) => {
+          const d = event.data;
+          if (!d) return;
+
+          switch(d.type) {
+              // 1. Parameter Sync (React -> Three.js)
+              case 'updateParam':
+                  const ctrl = guiControllers.get(d.name);
+                  if (ctrl) {
+                      ctrl.object[ctrl.property] = d.value;
+                      if (ctrl.onChangeCallback) ctrl.onChangeCallback(d.value);
+                      
+                      // Also support generic global if used
+                      if (window.params) window.params[d.name] = d.value;
+                      if (window.regenerate) window.regenerate();
+                  }
+                  break;
+
+              // 2. Modeling Operations
+              case 'addPrimitive': addPrimitive(d.primType); break;
+              case 'performBoolean': performBoolean(d.op, d.targetId, d.toolId); break;
+              case 'updateMaterial': updateMaterial(d.config); break;
+              case 'extrudeSketch': extrudeSketch(d.points, d.height); break;
+              case 'repairMesh': 
+                  if(selectedIds.length && getObjectById(selectedIds[0]).geometry) {
+                      const geo = BufferGeometryUtils.mergeVertices(getObjectById(selectedIds[0]).geometry);
+                      geo.computeVertexNormals();
+                      getObjectById(selectedIds[0]).geometry = geo;
+                  }
+                  break;
+              
+              // 3. Selection & View
+              case 'selectObject': selectObjects(d.objectId ? [d.objectId] : []); break;
+              case 'setGizmoMode': 
+                  if (transformControl) {
+                      if (d.mode === 'none') transformControl.detach();
+                      else { 
+                          transformControl.setMode(d.mode); 
+                          if(!transformControl.object && selectedIds.length) selectObjects(selectedIds);
+                      }
+                  }
+                  break;
+              case 'setView':
+                  if (!window.camera || !window.controls) return;
+                  const dist = window.camera.position.length();
+                  if (d.view === 'top') { window.camera.position.set(0, dist, 0); window.camera.lookAt(0,0,0); }
+                  else if (d.view === 'front') { window.camera.position.set(0, 0, dist); window.camera.lookAt(0,0,0); }
+                  else if (d.view === 'side') { window.camera.position.set(dist, 0, 0); window.camera.lookAt(0,0,0); }
+                  else if (d.view === 'iso') { window.camera.position.set(dist/1.7, dist/1.7, dist/1.7); window.camera.lookAt(0,0,0); }
+                  else if (d.view === 'center') { window.camera.position.set(8, 8, 8); window.camera.lookAt(0,0,0); }
+                  if (window.controls) window.controls.update();
+                  break;
+              
+              // 4. Export
+              case 'exportModel': cleanExport(d.format); break;
+              
+              // 5. Environment & Visibility
+              case 'toggleGrid': 
+                  window.scene?.children.forEach(c => { 
+                      if(c.type === 'GridHelper' || c.type === 'AxesHelper') c.visible = d.visible; 
+                  }); 
+                  break;
+                  
+              case 'setTurntable':
+                  if (window.controls) {
+                      window.controls.autoRotate = d.active;
+                      window.controls.autoRotateSpeed = 2.0;
+                  }
+                  break;
+                  
+              case 'setRenderMode':
+                  window.scene?.traverse(obj => {
+                      if (obj.isMesh && obj.material) {
+                          if (d.mode === 'wireframe') {
+                              obj.material.wireframe = true;
+                          } else {
+                              obj.material.wireframe = false;
+                          }
+                      }
+                  });
+                  if (window.renderer) {
+                      window.renderer.shadowMap.enabled = (d.mode === 'realistic');
+                  }
+                  break;
+                  
+              case 'setEnvironment':
+                  if (window.scene) {
+                      const colors = {
+                          studio: 0x111827,
+                          dark: 0x000000,
+                          sunset: 0x2a1b1b,
+                          park: 0x1a2e1a,
+                          lobby: 0x2e2e2e
+                      };
+                      window.scene.background = new THREE.Color(colors[d.env] || 0x111827);
+                  }
+                  break;
+                  
+              case 'setClipping':
+                  if (window.renderer && window.scene) {
+                      if (d.value === 0) {
+                          window.renderer.localClippingEnabled = false;
+                      } else {
+                          window.renderer.localClippingEnabled = true;
+                          // If we have a selected object, we clip that, otherwise global clip is complex in this simple setup
+                          // For now, let's just update the global clipping plane if we attach it to everything
+                          if (clippingPlane) {
+                              clippingPlane.constant = d.value;
+                              window.scene.traverse(obj => {
+                                  if (obj.isMesh && obj.material) {
+                                      obj.material.clippingPlanes = [clippingPlane];
+                                      obj.material.clipShadows = true;
+                                  }
+                              });
+                          }
+                      }
+                  }
+                  break;
+          }
+      });
     </script>
     `;
-    
-    // Inject import map if <head> exists, else simple prepend
-    if (html.includes('</head>')) {
-        return html.replace('<head>', `<head>${cspMeta}${importMap}`)
-                   .replace('</head>', `${driverScript}</head>`);
-    } else {
-        return `<!DOCTYPE html><html><head>${cspMeta}${importMap}${driverScript}</head><body>${html}</body></html>`;
-    }
+
+    let clean = html.replace(/<script type="importmap">[\s\S]*?<\/script>/gi, '');
+    if (!clean.includes('<head>')) clean = `<!DOCTYPE html><html><head></head><body>${clean}</body></html>`;
+    return clean.replace('<head>', `<head>${importMap}${driverScript}`);
 };

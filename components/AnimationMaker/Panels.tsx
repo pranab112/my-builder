@@ -114,6 +114,35 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
 
   const handleClearSketch = () => setSketchPoints([]);
   
+  const handleCloseLoop = () => {
+      if(sketchPoints.length > 2) {
+          setSketchPoints(prev => [...prev, prev[0]]);
+      }
+  };
+
+  const handleAddRect = () => {
+      setSketchPoints([
+          {x: -5, y: -5},
+          {x: 5, y: -5},
+          {x: 5, y: 5},
+          {x: -5, y: 5},
+          {x: -5, y: -5}
+      ]);
+  };
+
+  const handleAddCircle = () => {
+      const pts = [];
+      const segments = 32;
+      for(let i=0; i<=segments; i++) {
+          const theta = (i/segments) * Math.PI * 2;
+          pts.push({
+              x: Math.cos(theta) * 5,
+              y: Math.sin(theta) * 5
+          });
+      }
+      setSketchPoints(pts);
+  };
+  
   const handleExtrude = () => {
       if(handleSketchExtrude) handleSketchExtrude(sketchPoints, extrudeHeight);
       setSketchPoints([]);
@@ -310,6 +339,14 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
        {store.activeTab === 'sketch' && (
            <div className="bg-slate-900/80 p-4 rounded-2xl border border-slate-700 shadow-2xl backdrop-blur-md pointer-events-auto space-y-4 animate-fade-in">
                <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">2D Sketch Pad</h4>
+               
+               {/* Primitive Toolbar */}
+               <div className="flex gap-2 mb-2">
+                   <button onClick={handleAddRect} className="flex-1 bg-slate-800 text-[10px] text-slate-300 py-1 rounded hover:bg-slate-700 border border-slate-700" title="Add Rectangle">Rect</button>
+                   <button onClick={handleAddCircle} className="flex-1 bg-slate-800 text-[10px] text-slate-300 py-1 rounded hover:bg-slate-700 border border-slate-700" title="Add Circle">Circle</button>
+                   <button onClick={handleCloseLoop} disabled={sketchPoints.length < 3} className="flex-1 bg-indigo-900 text-[10px] text-indigo-300 py-1 rounded hover:bg-indigo-800 border border-indigo-700 disabled:opacity-50" title="Connect Last to First">Close Loop</button>
+               </div>
+
                <div className="bg-slate-800 rounded border border-slate-700 overflow-hidden cursor-crosshair relative">
                    <canvas 
                        ref={canvasRef} 
@@ -321,7 +358,7 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
                        className="w-full h-auto block"
                    />
                    <div className="absolute bottom-1 right-1 text-[9px] text-slate-500 bg-slate-900/50 px-1 rounded pointer-events-none">
-                       Shift: Ortho
+                       Shift: Ortho | Click: Point
                    </div>
                </div>
                
