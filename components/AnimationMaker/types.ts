@@ -12,7 +12,7 @@ export interface SavedProject {
 
 export type ViewState = 'dashboard' | 'create-details' | 'create-category' | 'builder';
 export type RenderMode = 'blueprint' | 'realistic' | 'wireframe' | 'normal' | 'analysis' | 'overhang' | 'slicer' | 'heatmap';
-export type Tab = 'tools' | 'material' | 'specs' | 'environment' | 'export' | 'print';
+export type Tab = 'tools' | 'hierarchy' | 'material' | 'specs' | 'environment' | 'export' | 'print' | 'bookmarks';
 export type GizmoMode = 'translate' | 'rotate' | 'scale' | 'measure' | 'none';
 export type PrinterPreset = 'ender3' | 'bambu' | 'prusa' | 'custom';
 export type MaterialType = 'pla' | 'petg' | 'abs' | 'tpu';
@@ -23,13 +23,11 @@ export type WorkspaceMode =
   | 'designer' 
   | 'engineer' 
   | 'game_dev'
-  // High-Value
   | 'architect'
   | 'animator'
   | 'jewelry'
   | 'medical'
   | 'ecommerce'
-  // Niche
   | 'sculptor'
   | 'automotive'
   | 'fashion'

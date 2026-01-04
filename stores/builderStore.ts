@@ -33,6 +33,14 @@ interface BuilderState {
   clippingValue: number;
   environment: 'studio' | 'sunset' | 'dark' | 'park' | 'lobby';
   isRecording: boolean;
+  
+  // Assembly / Scene Graph
+  sceneGraph: { id: string, name: string, type: string, visible: boolean, selected: boolean }[];
+  selectedObjectIds: string[];
+  
+  // Modeling Tools
+  booleanOp: 'union' | 'subtract' | 'intersect' | null;
+  booleanTarget: string | null;
 
   // Engineering & Printing
   units: UnitSystem;
@@ -72,26 +80,33 @@ interface BuilderState {
   setRenderMode: (mode: RenderMode) => void;
   toggleGrid: () => void;
   setGizmoMode: (mode: GizmoMode) => void;
-  setTurntableActive: (active: boolean) => void;
-  setClippingValue: (val: number) => void;
-  setEnvironment: (env: 'studio' | 'sunset' | 'dark' | 'park' | 'lobby') => void;
-  setIsRecording: (recording: boolean) => void;
+  setTurntableActive: (turntableActive) => void;
+  setClippingValue: (clippingValue) => void;
+  setEnvironment: (environment: 'studio' | 'sunset' | 'dark' | 'park' | 'lobby') => void;
+  setIsRecording: (isRecording: boolean) => void;
+  
+  setSceneGraph: (graph: any[]) => void;
+  setSelectedObjectIds: (ids: string[]) => void;
+  
+  setBooleanOp: (op: 'union' | 'subtract' | 'intersect' | null) => void;
+  setBooleanTarget: (id: string | null) => void;
 
-  // Print/Mat Actions
   setUnits: (units: UnitSystem) => void;
-  setPrinterPreset: (preset: PrinterPreset) => void;
-  setMaterialType: (type: MaterialType) => void;
-  setInfillPercentage: (val: number) => void;
-  setSlicerLayer: (val: number) => void;
-  setShowSupports: (show: boolean) => void;
+  setPrinterPreset: (printerPreset: PrinterPreset) => void;
+  setMaterialType: (materialType: MaterialType) => void;
+  setInfillPercentage: (infillPercentage: number) => void;
+  setSlicerLayer: (slicerLayer: number) => void;
+  setShowSupports: (showSupports: boolean) => void;
+  
   setMaterialConfig: (config: MaterialConfig | ((prev: MaterialConfig) => MaterialConfig)) => void;
+  
   setSpecs: (specs: GeometrySpecs | null) => void;
   
   addBookmark: (bookmark: CameraBookmark) => void;
   removeBookmark: (id: string) => void;
 
-  // Initialization
   resetStore: () => void;
+  
   loadProject: (project: SavedProject) => void;
 }
 
@@ -100,6 +115,15 @@ const DEFAULT_MATERIAL: MaterialConfig = {
     metalness: 0.1,
     roughness: 0.5,
     wireframe: false
+};
+
+const MAX_HISTORY_LENGTH = 15;
+
+// HELPER: Input Sanitization
+const clamp = (num: any, min: number, max: number, def: number): number => {
+    const val = parseFloat(num);
+    if (isNaN(val) || !isFinite(val)) return def;
+    return Math.min(Math.max(val, min), max);
 };
 
 const initialState = {
@@ -127,8 +151,14 @@ const initialState = {
     gizmoMode: 'none' as GizmoMode,
     turntableActive: false,
     clippingValue: 0,
-    environment: 'studio' as const,
+    environment: 'studio' as 'studio' | 'sunset' | 'dark' | 'park' | 'lobby',
     isRecording: false,
+    
+    sceneGraph: [],
+    selectedObjectIds: [],
+    
+    booleanOp: null as any,
+    booleanTarget: null,
 
     units: 'mm' as UnitSystem,
     printerPreset: 'ender3' as PrinterPreset,
@@ -154,8 +184,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           return;
       }
       
-      const newHistory = history.slice(0, historyIndex + 1);
+      let newHistory = history.slice(0, historyIndex + 1);
       newHistory.push(code);
+      
+      if (newHistory.length > MAX_HISTORY_LENGTH) {
+          newHistory = newHistory.slice(newHistory.length - MAX_HISTORY_LENGTH);
+      }
+      
       set({ 
           htmlCode: code, 
           codeEdits: code,
@@ -210,22 +245,28 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   toggleGrid: () => set((state) => ({ showGrid: !state.showGrid })),
   setGizmoMode: (gizmoMode) => set({ gizmoMode }),
   setTurntableActive: (turntableActive) => set({ turntableActive }),
-  setClippingValue: (clippingValue) => set({ clippingValue }),
+  setClippingValue: (val) => set({ clippingValue: clamp(val, -100, 100, 0) }), // Validation
   setEnvironment: (environment) => set({ environment }),
   setIsRecording: (isRecording) => set({ isRecording }),
+  
+  setSceneGraph: (sceneGraph) => set({ sceneGraph }),
+  setSelectedObjectIds: (selectedObjectIds) => set({ selectedObjectIds }),
+  
+  setBooleanOp: (booleanOp) => set({ booleanOp }),
+  setBooleanTarget: (booleanTarget) => set({ booleanTarget }),
 
   setUnits: (units) => set({ units }),
   setPrinterPreset: (printerPreset) => set({ printerPreset }),
   setMaterialType: (materialType) => set({ materialType }),
-  setInfillPercentage: (infillPercentage) => set({ infillPercentage }),
-  setSlicerLayer: (slicerLayer) => set({ slicerLayer }),
+  setInfillPercentage: (val) => set({ infillPercentage: clamp(val, 0, 100, 20) }), // Validation
+  setSlicerLayer: (val) => set({ slicerLayer: clamp(val, 0, 100, 100) }), // Validation
   setShowSupports: (showSupports) => set({ showSupports }),
   
   setMaterialConfig: (config) => set((state) => ({
       materialConfig: typeof config === 'function' ? config(state.materialConfig) : config
   })),
   
-  setSpecs: (specs) => set({ specs }),
+  setSpecs: (specs) => set({ specs }), // Spec validation could be added here if needed, but it comes from internal geometry calculation usually
   
   addBookmark: (bookmark) => set((state) => ({ bookmarks: [...state.bookmarks, bookmark] })),
   removeBookmark: (id) => set((state) => ({ bookmarks: state.bookmarks.filter(b => b.id !== id) })),

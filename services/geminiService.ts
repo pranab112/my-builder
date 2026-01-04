@@ -537,296 +537,162 @@ const MODE_AI_CONFIG: Record<WorkspaceMode, ModeConfig> = {
 };
 
 export const analyzeProductIdentity = async (base64Images: string[]): Promise<string> => {
-  const systemPrompt = `
-    You are a Geometric Product Analyst with a specialization in CMF (Color, Material, Finish).
-    
-    TASK: Analyze the reference images to create a strict "Surface Map" for a 3D reconstruction.
-    
-    OUTPUT THE FOLLOWING CRITICAL DATA:
-    
-    1. **COLOR PALETTE (ACCURACY MODE)**:
-       - **Primary Color**: Describe the exact shade (e.g., "Midnight Blue", "Safety Orange", "Chartreuse"). Provide estimated Hex Codes if clear.
-       - **Accent Colors**: List secondary colors found on buttons, logos, or trim.
-       - **Color Consistency**: Does the color shift in light? (Iridescent, gradient, solid).
-       
-    2. **MATERIAL & TEXTURE**:
-       - **Surface Finish**: Is it Matte, Glossy, Satin, Metallic, Brushed, Fabric, Grainy plastic?
-       - **Reflectivity**: How does light interact? (High specular highlights, diffuse soft absorption, subsurface scattering).
-       - **Transparency**: Is any part opaque, translucent, or transparent glass?
-
-    3. **LOGO GEOMETRY & SCALE (MATH)**:
-       - **Placement**: Exactly which face is the logo on? (e.g. "Front Face Only", "Wraps around").
-       - **Logo Width Ratio**: Estimate the width of the logo/text compared to the width of the product itself.
-       - **Vertical Position**: Where does it sit?
-       
-    4. **NEGATIVE SPACE (RESTRICTED ZONES)**:
-       - List every part of the product surface that is **BLANK**. 
-       - This is used to BLOCK the AI from adding random logos to these areas.
-       
-    5. **TYPOGRAPHY & CONTENT**:
-       - Transcribe the text exactly. Case-sensitive.
-
-    Output a structured "Surface Map".
-  `;
-
-  const parts: any[] = [{ text: systemPrompt }];
+  const parts: any[] = [{ text: "Analyze these images and describe the product's physical appearance, material, color, and key features in detail. Focus on visual identity." }];
   
-  base64Images.forEach((img) => {
-    const cleanBase64 = img.split(',')[1] || img;
-    parts.push({ inlineData: { mimeType: 'image/png', data: cleanBase64 } });
+  for (const img of base64Images) {
+    const clean = img.split(',')[1] || img;
+    parts.push({ inlineData: { mimeType: 'image/png', data: clean } });
+  }
+
+  const response = await backend.ai.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: { parts },
+    config: { thinkingConfig: { thinkingBudget: 2048 } }
   });
 
-  try {
-    const response = await backend.ai.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: { parts },
-      config: {
-        thinkingConfig: { thinkingBudget: 2048 }
-      }
-    });
-    return response.text || "A generic product.";
-  } catch (error) {
-    console.warn("Product analysis failed", error);
-    return "The product shown in the reference images.";
-  }
+  return response.text || "Product analysis failed.";
 };
 
-export const generateSceneDescription = async (
-  base64Images: string[],
-  productIdentity: string,
-  userHint?: string
-): Promise<string> => {
-  const systemInstruction = `
-    You are a Creative Director. Define a SINGLE, CONSISTENT studio environment.
-    
-    PRODUCT CONTEXT: ${productIdentity}
-    
-    TASK:
-    - Design a scene that complements the product's specific COLOR PALETTE and MATERIALS.
-    - If the product is matte, consider contrast lighting. If glossy, consider softbox reflections.
-    - Ensure the background color does not clash with the primary product color.
-    
-    Output ONE descriptive paragraph.
+export const generateSceneDescription = async (base64Images: string[], productIdentity: string, userHint?: string): Promise<string> => {
+  const prompt = `
+    You are a professional product photographer and set designer.
+    PRODUCT IDENTITY: ${productIdentity}
+    USER HINT: ${userHint || "None provided. Create a suitable professional setting."}
+
+    Task: Describe a scene composition, lighting, and background that perfectly complements this product. 
+    The scene should be photorealistic and highlight the product's features.
+    Keep the description concise but evocative.
   `;
+  
+  const parts: any[] = [{ text: prompt }];
+  for (const img of base64Images) {
+    const clean = img.split(',')[1] || img;
+    parts.push({ inlineData: { mimeType: 'image/png', data: clean } });
+  }
 
-  const parts: any[] = [
-    { text: userHint ? `USER REQUEST: "${userHint}"\n\nDesign the scene based on this request + the product identity.` : `Design the perfect commercial scene for this product.` }
-  ];
-
-  base64Images.forEach((img) => {
-    const cleanBase64 = img.split(',')[1] || img;
-    parts.push({ inlineData: { mimeType: 'image/png', data: cleanBase64 } });
+  const response = await backend.ai.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: { parts },
+    config: { thinkingConfig: { thinkingBudget: 2048 } }
   });
 
-  try {
-    const response = await backend.ai.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: { parts },
-      config: { 
-        systemInstruction,
-        thinkingConfig: { thinkingBudget: 1024 } 
-      }
-    });
-    return response.text || "A professional studio setting.";
-  } catch (error) {
-    return userHint || "A professional studio setting.";
-  }
+  return response.text || "Scene description failed.";
 };
 
 export const generateEcommerceImage = async (
-  base64Images: string[],
-  productIdentity: string,
-  sceneDescription: string,
-  angleInstruction: string,
-  aspectRatio: AspectRatio,
-  resolution: ImageResolution = '1K'
+  base64Images: string[], 
+  productIdentity: string, 
+  sceneDescription: string, 
+  angleInstruction: string, 
+  aspectRatio: AspectRatio, 
+  resolution: ImageResolution
 ): Promise<string> => {
-  const systemPrompt = `
-    You are a 3D Product Photographer.
+  const prompt = `
+    Create a professional e-commerce product shot.
+    PRODUCT: ${productIdentity}
+    SCENE: ${sceneDescription}
+    ANGLE/COMPOSITION: ${angleInstruction}
     
-    CRITICAL INSTRUCTION - COLOR & MATERIAL FIDELITY:
-    - READ the "Surface Map" below carefully.
-    - You must STRICTLY reproduce the **Primary Color**, **Material Finish**, and **Textures** defined in the Surface Map.
-    - Do NOT hallucinate new colors on the product.
-    - If the product is described as "Matte Black", do not make it glossy. If it is "Metallic Silver", ensure it reflects.
-    
-    INPUT: 
-    - REFERENCE IMAGES (Visual Truth)
-    - SURFACE MAP (Textual Truth): ${productIdentity}
-    - SCENE: ${sceneDescription}
-    - ANGLE: ${angleInstruction}
-    
-    GENERATE: A photorealistic commercial shot.
+    Ensure the product looks exactly like the reference images provided.
+    High fidelity, photorealistic, 8k resolution.
   `;
+  
+  const parts: any[] = [{ text: prompt }];
+  
+  for (const img of base64Images) {
+     const clean = img.split(',')[1] || img;
+     parts.push({ inlineData: { mimeType: 'image/png', data: clean } });
+  }
 
-  const parts: any[] = [{ text: systemPrompt }];
-
-  base64Images.forEach((img) => {
-    const cleanBase64 = img.split(',')[1] || img;
-    parts.push({ inlineData: { mimeType: 'image/png', data: cleanBase64 } });
+  const response = await backend.ai.generateContent({
+    model: 'gemini-3-pro-image-preview',
+    contents: { parts },
+    config: {
+        imageConfig: {
+            aspectRatio: aspectRatio,
+            imageSize: resolution
+        }
+    }
   });
 
-  try {
-    const response = await backend.ai.generateContent({
-      model: 'gemini-3-pro-image-preview', // Upgraded to Pro for imageSize support
-      contents: { parts },
-      config: { 
-        imageConfig: { 
-          aspectRatio: aspectRatio,
-          imageSize: resolution // Supports '1K', '2K', '4K'
-        } 
-      },
-    });
-
-    // The backend proxy serializes the response.candidates structure
-    const responseParts = response.candidates?.[0]?.content?.parts;
-    let generatedImageBase64 = '';
-
-    if (responseParts) {
-      for (const part of responseParts) {
-        if (part.inlineData && part.inlineData.data) {
-          generatedImageBase64 = part.inlineData.data;
-          break;
-        }
+  const candidates = response.candidates;
+  if (candidates && candidates.length > 0 && candidates[0].content && candidates[0].content.parts) {
+      for (const part of candidates[0].content.parts) {
+          if (part.inlineData) {
+              return `data:image/png;base64,${part.inlineData.data}`;
+          }
       }
-    }
-
-    if (!generatedImageBase64) throw new Error("No image generated.");
-    return `data:image/png;base64,${generatedImageBase64}`;
-
-  } catch (error: any) {
-    console.error("Gemini Image Gen Error:", error);
-    throw new Error(error.message || "Generation failed.");
   }
+  
+  throw new Error("No image generated");
 };
 
 export const suggestProjectCategories = async (description: string): Promise<CategorySuggestion[]> => {
-  try {
-    const response = await backend.ai.generateContent({
-      model: 'gemini-3-flash-preview', 
-      contents: `User wants to build: "${description}". 
-      Suggest 3 distinct, professional Product Categories suitable for parametric design/selling.
-      
-      Requirements:
-      1. Provide a Title (e.g. "Parametric Furniture").
-      2. Provide a Description (e.g. "Focus on joinery and adjustable scale for different room sizes.").
-      
-      Examples: "Customizable Planter", "Modular Organizer", "Mechanical Part".`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: { 
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              description: { type: Type.STRING }
-            }
-          }
-        }
-      }
-    });
+  const prompt = `
+    Analyze this project description: "${description}"
+    Suggest 3 suitable categories/strategies for creating this in a 3D workspace.
+    Return JSON format: { "suggestions": [{ "title": "Category Name", "description": "Why this fits" }] }
+  `;
 
-    const suggestions = JSON.parse(response.text.trim());
-    
-    return [
-      {
-        title: "Parametric Design (Configurable)",
-        description: "Best for sales. A smart model with adjustable dimensions (width, height, curves) that customers can personalize."
-      },
-      ...suggestions
-    ];
+  const response = await backend.ai.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: { parts: [{ text: prompt }] },
+    config: { responseMimeType: "application/json" }
+  });
+
+  try {
+      const json = JSON.parse(response.text);
+      return json.suggestions || [];
   } catch (e) {
-    console.error(e);
-    return [
-      { title: "Parametric Design (Configurable)", description: "Best for sales. A smart model with adjustable dimensions." },
-      { title: "3D Printable Part", description: "Optimized for FDM/SLA printing with correct tolerances and manifold geometry." },
-      { title: "Architectural Model", description: "Scale model focus with attention to structural aesthetics." },
-      { title: "Functional Prototype", description: "Engineering-grade mechanical assembly for testing fit and form." }
-    ];
+      return [{ title: "General", description: "Default category" }];
   }
 };
 
-export const enhanceUserPrompt = async (
-  originalPrompt: string, 
-  category: string, 
-  workspaceMode: WorkspaceMode = 'designer'
-): Promise<string> => {
-  if (!originalPrompt.trim()) return "";
-
-  const modeConfig = MODE_AI_CONFIG[workspaceMode];
-
-  try {
+export const enhanceUserPrompt = async (prompt: string, category: string, workspaceMode: string): Promise<string> => {
+    const fullPrompt = `
+      Enhance this user prompt for a 3D generative model.
+      User Prompt: "${prompt}"
+      Category: ${category}
+      Workspace Mode: ${workspaceMode}
+      
+      Make it more descriptive, adding details about geometry, features, and style suitable for the selected mode.
+      Keep it under 50 words.
+    `;
     const response = await backend.ai.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: `You are a Technical 3D Prompt Engineer specializing in ${modeConfig.name}.
-
-      CONTEXT:
-      - Category: "${category}"
-      - Workspace Mode: ${workspaceMode} (${modeConfig.name})
-      - Scale: ${modeConfig.scale}
-      - Units: ${modeConfig.units}
-      - Quality Focus: ${modeConfig.qualityFocus}
-
-      USER INPUT: "${originalPrompt}"
-
-      TASK: Rewrite the user's input into a highly detailed, technical prompt appropriate for ${modeConfig.name}.
-
-      - Include specific dimensions in ${modeConfig.units}
-      - Add parametric variables relevant to this mode
-      - Specify geometric operations appropriate for ${workspaceMode}
-      - Include material suggestions matching the mode defaults
-      `,
+        model: 'gemini-3-flash-preview',
+        contents: { parts: [{ text: fullPrompt }] }
     });
-    return response.text.trim();
-  } catch (e) {
-    return originalPrompt;
-  }
+    return response.text || prompt;
 };
 
-export const enhanceScenePrompt = async (originalPrompt: string): Promise<string> => {
-  if (!originalPrompt.trim()) return "";
-
-  try {
-    const response = await backend.ai.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `You are a Creative 3D Director.
-      CONTEXT: The user is building an animated 3D scene in Three.js (Motion Studio).
-      USER INPUT: "${originalPrompt}"
+export const enhanceScenePrompt = async (prompt: string): Promise<string> => {
+    const fullPrompt = `
+      Enhance this prompt for a creative 3D scene generation (Three.js).
+      User Prompt: "${prompt}"
       
-      TASK: Rewrite the user's input into a vivid, technically detailed creative prompt.
-      - FOCUS on: Atmosphere, Lighting types (Hemisphere, Spotlights), Animation logic (walking, floating, rotating), and Particle effects.
-      - Suggest specific colors and moods.
-      - Make it sound like a high-end generative art description.
-      `,
+      Add details about lighting, atmosphere, colors, and motion.
+      Keep it under 50 words.
+    `;
+    const response = await backend.ai.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: { parts: [{ text: fullPrompt }] }
     });
-    return response.text.trim();
-  } catch (e) {
-    return originalPrompt;
-  }
+    return response.text || prompt;
 };
 
-export const enhanceCinematicPrompt = async (originalPrompt: string): Promise<string> => {
-  if (!originalPrompt.trim()) return "";
-
-  try {
-    const response = await backend.ai.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `You are a Virtual Cinematographer.
-      CONTEXT: The user is scripting a short movie scene in Three.js.
-      USER INPUT: "${originalPrompt}"
+export const enhanceCinematicPrompt = async (prompt: string): Promise<string> => {
+    const fullPrompt = `
+      Enhance this prompt for a cinematic movie scene generation.
+      User Prompt: "${prompt}"
       
-      TASK: Rewrite the input into a detailed Director's Script.
-      - **CHARACTERS**: If the user asks for a character (robot, person), describe their appearance and ACTION (walking, waving).
-      - MUST INCLUDE: Specific Camera Movement (e.g. "Slow Dolly In", "Truck Left", "Orbit", "Crane Up").
-      - MUST INCLUDE: Visual Atmosphere & Lighting (e.g. "Cyberpunk Neon", "Golden Hour", "Spooky Fog").
-      - Make it sound professional and ready for a code generator.
-      `,
+      Focus on camera movement, action description, and emotional tone.
+      Keep it under 50 words.
+    `;
+    const response = await backend.ai.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: { parts: [{ text: fullPrompt }] }
     });
-    return response.text.trim();
-  } catch (e) {
-    return originalPrompt;
-  }
+    return response.text || prompt;
 };
 
 export const generateAnimationCode = async (
@@ -888,7 +754,8 @@ export const generateAnimationCode = async (
          {
            "imports": {
              "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
-             "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+             "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/",
+             "three-bvh-csg": "https://unpkg.com/three-bvh-csg@0.0.16/build/index.module.js"
            }
          }
        </script>
@@ -899,10 +766,14 @@ export const generateAnimationCode = async (
        - Import { STLExporter } from 'three/addons/exporters/STLExporter.js';
        - Import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
        - Import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+       - Import { USDZExporter } from 'three/addons/exporters/USDZExporter.js'; // ADDED USDZ
+       - Import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'; 
        - Import GUI from 'three/addons/libs/lil-gui.module.min.js'.
        - Import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
+       - Import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js'; // ADDED FOR MESH REPAIR
        - Import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
        - Import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+       - **BOOLEAN OPERATIONS**: Import { SUBTRACTION, ADDITION, INTERSECTION, Brush, Evaluator } from 'three-bvh-csg';
 
     3. **CAD SCENE SETUP**:
        - Renderer: \`antialias: true, localClippingEnabled: true\`.
@@ -925,6 +796,19 @@ export const generateAnimationCode = async (
 
     7. **NO BLACK SCREENS**:
        - Verify renderer.setSize, camera position, body margin:0
+
+    8. **BOOLEAN OPERATIONS STRATEGY (CRITICAL)**:
+       - When the user asks to "cut", "subtract", "combine", "union", "intersect" or "hole":
+       - Use 'three-bvh-csg'.
+       - Convert meshes to \`Brush\`: \`const brushA = new Brush(geometryA, materialA);\`
+       - Ensure matrices are updated: \`brushA.updateMatrixWorld();\`
+       - Perform operation: \`const result = new Evaluator().evaluate(brushA, brushB, SUBTRACTION);\`.
+       - \`result\` is a Mesh. Add it to scene.
+       
+    9. **ASSEMBLY & HIERARCHY**:
+       - If creating multiple parts, use \`const group = new THREE.Group()\` to hold them.
+       - Name your meshes clearly: \`mesh.name = "UpperArm"\`.
+       - This allows the Selection Manager to identify parts.
   `;
 
   const modeSpecificRules = `

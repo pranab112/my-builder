@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
@@ -84,26 +85,25 @@ const setCachedResponse = (key: string, data: any) => {
     }
 };
 
+// --- GLOBAL RATE LIMITER ---
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 3000; // 3 seconds between AI calls
+
+const checkGlobalRateLimit = () => {
+    const now = Date.now();
+    if (now - lastRequestTime < MIN_REQUEST_INTERVAL) {
+        const wait = Math.ceil((MIN_REQUEST_INTERVAL - (now - lastRequestTime)) / 1000);
+        throw new Error(`Please wait ${wait}s before generating again.`);
+    }
+    lastRequestTime = now;
+};
+
 
 // --- IMPLEMENTATION 1: MOCK LOCAL BACKEND (Development) ---
 
 const SIMULATED_LATENCY = 600; 
-const RATE_LIMIT_WINDOW = 60000;
-const MAX_REQUESTS = 15;
 
 class LocalBackend implements BackendService {
-  private checkRateLimit() {
-    const now = Date.now();
-    const raw = localStorage.getItem('proshot_rate_limit');
-    let timestamps: number[] = raw ? JSON.parse(raw) : [];
-    timestamps = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW);
-    if (timestamps.length >= MAX_REQUESTS) {
-        throw new Error("Rate limit exceeded (Dev Mock).");
-    }
-    timestamps.push(now);
-    localStorage.setItem('proshot_rate_limit', JSON.stringify(timestamps));
-  }
-
   private async sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
   auth = {
@@ -187,7 +187,8 @@ class LocalBackend implements BackendService {
 
   ai = {
       generateContent: async (params: any): Promise<any> => {
-          this.checkRateLimit();
+          checkGlobalRateLimit();
+          
           const cacheKey = getCacheKey(params);
           const cached = getCachedResponse(cacheKey);
           if (cached) return cached;
@@ -213,9 +214,6 @@ class LocalBackend implements BackendService {
 }
 
 // --- IMPLEMENTATION 2: SUPABASE PRODUCTION BACKEND ---
-// Requires VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY env variables.
-// Requires a table 'projects' in Supabase with columns matches Project interface.
-// Requires an Edge Function 'ai-proxy' deployed to handle Gemini calls securely.
 
 class SupabaseBackendImpl implements BackendService {
   private supabase: SupabaseClient;
@@ -226,17 +224,14 @@ class SupabaseBackendImpl implements BackendService {
 
   auth = {
     login: async (email: string) => {
-        // For production, we prefer OAuth or Magic Link. 
-        // This simple login method maps to Magic Link for email.
         const { error } = await this.supabase.auth.signInWithOtp({ email });
         if (error) throw error;
         throw new Error("Check your email for the login link!");
     },
     register: async (name: string, email: string) => {
-         // Supabase handles registration via same flow usually, or SignUp
          const { data, error } = await this.supabase.auth.signUp({ 
              email, 
-             password: 'temporary-password-placeholder', // In real app, use UI for password
+             password: 'temporary-password-placeholder',
              options: { data: { full_name: name } }
          });
          if (error) throw error;
@@ -250,7 +245,6 @@ class SupabaseBackendImpl implements BackendService {
             }
         });
         if (error) throw error;
-        // This will redirect, so we return a placeholder
         return { id: '', name: '', email: '' }; 
     },
     logout: async () => {
@@ -275,7 +269,6 @@ class SupabaseBackendImpl implements BackendService {
           const { data, error } = await query.order('updated_at', { ascending: false });
           if (error) throw error;
           
-          // Map snake_case DB to camelCase Interface
           return data.map((p: any) => ({
               id: p.id,
               type: p.type,
@@ -331,13 +324,12 @@ class SupabaseBackendImpl implements BackendService {
 
   ai = {
       generateContent: async (params: any) => {
-          // Client-side Caching is still valuable in Production
+          checkGlobalRateLimit();
+          
           const cacheKey = getCacheKey(params);
           const cached = getCachedResponse(cacheKey);
           if (cached) return cached;
 
-          // Call Supabase Edge Function 'ai-proxy'
-          // This keeps the API KEY on the server (in Supabase Secrets)
           const { data, error } = await this.supabase.functions.invoke('ai-proxy', {
               body: params
           });
@@ -356,25 +348,20 @@ class SupabaseBackendImpl implements BackendService {
 // --- FACTORY ---
 
 function createBackend(): BackendService {
-    // Safely resolve environment variables handling both Vite (import.meta.env) and potential undefined states
     let metaEnv: any = {};
     try {
         if (import.meta && (import.meta as any).env) {
             metaEnv = (import.meta as any).env;
         }
-    } catch (e) {
-        // Fallback or ignore if import.meta access fails
-    }
+    } catch (e) { }
 
     const useSupabase = metaEnv.VITE_USE_SUPABASE === 'true';
     const supabaseUrl = metaEnv.VITE_SUPABASE_URL;
     const supabaseKey = metaEnv.VITE_SUPABASE_ANON_KEY;
 
     if (useSupabase && supabaseUrl && supabaseKey) {
-        console.log("🚀 Initializing Production Backend (Supabase)");
         return new SupabaseBackendImpl(supabaseUrl, supabaseKey);
     } else {
-        console.log("🛠️ Initializing Development Backend (Local Mock)");
         return new LocalBackend();
     }
 }
