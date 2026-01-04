@@ -1,5 +1,6 @@
+
 import { create } from 'zustand';
-import { Tab, RenderMode, GizmoMode, PrinterPreset, MaterialType, MaterialConfig, GeometrySpecs, SavedProject, UnitSystem, CameraBookmark, ParameterControl } from '../components/AnimationMaker/types';
+import { Tab, RenderMode, GizmoMode, PrinterPreset, MaterialType, MaterialConfig, GeometrySpecs, SavedProject, UnitSystem, CameraBookmark, ParameterControl, HistoryEntry } from '../components/AnimationMaker/types';
 
 // Helper to clamp values
 const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
@@ -7,7 +8,8 @@ const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, 
 const initialState = {
   prompt: '',
   htmlCode: null as string | null,
-  history: [] as string[],
+  history: [] as string[], // Raw code history for undo/redo
+  historyEntries: [] as HistoryEntry[], // Meta history for the Tree View
   historyIndex: -1,
   refImages: [] as string[],
   
@@ -57,6 +59,7 @@ interface BuilderState {
   prompt: string;
   htmlCode: string | null;
   history: string[];
+  historyEntries: HistoryEntry[];
   historyIndex: number;
   refImages: string[];
   
@@ -105,7 +108,8 @@ interface BuilderState {
   // Actions
   setPrompt: (prompt: string) => void;
   setRefImages: (images: string[]) => void;
-  setHtmlCode: (code: string, addToHistory?: boolean) => void;
+  setHtmlCode: (code: string, addToHistory?: boolean, promptContext?: string) => void;
+  restoreHistoryEntry: (entry: HistoryEntry) => void;
   setCodeEdits: (code: string) => void;
   undo: () => void;
   redo: () => void;
@@ -162,20 +166,52 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
   setPrompt: (prompt) => set({ prompt }),
   setRefImages: (refImages) => set({ refImages }),
-  setHtmlCode: (htmlCode, addToHistory = false) => set((state) => {
+  
+  setHtmlCode: (htmlCode, addToHistory = false, promptContext = "Manual Edit") => set((state) => {
     if (addToHistory && htmlCode) {
       const newHistory = state.history.slice(0, state.historyIndex + 1);
       newHistory.push(htmlCode);
+      
+      const newEntry: HistoryEntry = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          prompt: promptContext,
+          codeSnapshot: htmlCode
+      };
+      
       return { 
         htmlCode, 
         codeEdits: htmlCode, 
         history: newHistory, 
         historyIndex: newHistory.length - 1, 
+        historyEntries: [newEntry, ...state.historyEntries], // Newest first
         error: null 
       };
     }
     return { htmlCode, codeEdits: htmlCode || '' };
   }),
+
+  restoreHistoryEntry: (entry) => set((state) => {
+      // Find this code in the undo stack if possible, or just push a new state
+      const codeIndex = state.history.indexOf(entry.codeSnapshot);
+      let newHistoryIndex = codeIndex;
+      let newHistory = state.history;
+      
+      if (codeIndex === -1) {
+          // If lost from stack, push it as new head
+          newHistory = [...state.history.slice(0, state.historyIndex + 1), entry.codeSnapshot];
+          newHistoryIndex = newHistory.length - 1;
+      }
+
+      return {
+          htmlCode: entry.codeSnapshot,
+          codeEdits: entry.codeSnapshot,
+          history: newHistory,
+          historyIndex: newHistoryIndex,
+          error: null
+      };
+  }),
+
   setCodeEdits: (codeEdits) => set({ codeEdits }),
   undo: () => set((state) => {
     if (state.historyIndex > 0) {
@@ -250,6 +286,14 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   resetStore: () => set(initialState),
   
   loadProject: (project) => {
+      // Create an initial history entry for the loaded state
+      const initialEntry: HistoryEntry = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          prompt: "Project Loaded",
+          codeSnapshot: project.code
+      };
+
       set({
           ...initialState,
           prompt: project.description || '',
@@ -257,6 +301,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           codeEdits: project.code || '',
           history: project.code ? [project.code] : [],
           historyIndex: project.code ? 0 : -1,
+          historyEntries: project.code ? [initialEntry] : []
       });
   }
 }));

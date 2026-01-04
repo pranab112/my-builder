@@ -16,7 +16,7 @@ interface PanelsProps {
 }
 
 const CAD_TOOLS = [
-  { id: 'fillet', label: 'Fillet Edges', prompt: 'Apply a smooth rounded fillet to all sharp edges of the selected part. Add a "Fillet Radius" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4c-4.418 0-8 3.582-8 8s3.582 8 8 8 8-3.582 8-8-3.582-8-8-3.582-8-8-3.582-8-8-8zm0 14c-3.314 0-6-2.686-6-6s2.686-6 6-6 6 2.686 6 6-2.686 6-6 6z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 9a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" /></svg> },
+  { id: 'fillet', label: 'Fillet Edges', prompt: 'Apply a smooth rounded fillet to all sharp edges of the selected part. Add a "Fillet Radius" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4c-4.418 0-8 3.582-8 8s3.582 8 8 8 8-3.582 8-8-3.582-8-8-3.582-8-8-8zm0 14c-3.314 0-6-2.686-6-6s2.686-6 6-6 6 2.686 6 6-2.686 6-6 6z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 9a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" /></svg> },
   { id: 'chamfer', label: 'Chamfer', prompt: 'Apply a 45-degree chamfer (flat bevel) to the edges. Add a "Chamfer Size" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6l4-4h8l4 4v12l-4 4H8l-4-4V6z" /></svg> },
   { id: 'shell', label: 'Shell', prompt: 'Hollow out the interior to create a shell. Add a "Wall Thickness" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 11l-4-2m4 2l4-2" /></svg> },
   { id: 'trim', label: 'Trim', prompt: 'Trim the geometry by cutting away the [SPECIFY PART]. Add a "Cut Position" slider.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0 0L2.121 2.121" /></svg> },
@@ -33,6 +33,15 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [sketchPoints, setSketchPoints] = useState<{x:number, y:number}[]>([]);
   const [extrudeHeight, setExtrudeHeight] = useState(2);
+  const [mousePos, setMousePos] = useState<{x:number, y:number} | null>(null);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [orthoEnabled, setOrthoEnabled] = useState(false);
+
+  // Helper: Format Time
+  const formatTime = (ts: number) => {
+      const d = new Date(ts);
+      return `${d.getHours()}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
+  };
 
   const { weight, cost } = store.specs 
     ? calculateFilamentCost(
@@ -67,12 +76,40 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
   };
 
   // Sketch Handlers
-  const handleCanvasClick = (e: React.MouseEvent) => {
+  const handleCanvasMouseMove = (e: React.MouseEvent) => {
       if(!canvasRef.current) return;
       const rect = canvasRef.current.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / rect.width * 20 - 10; // Map to -10 to 10 coords
-      const y = -((e.clientY - rect.top) / rect.height * 20 - 10);
-      setSketchPoints(prev => [...prev, {x, y}]);
+      const rawX = (e.clientX - rect.left) / rect.width * 20 - 10; 
+      const rawY = -((e.clientY - rect.top) / rect.height * 20 - 10);
+      
+      let x = rawX;
+      let y = rawY;
+
+      // Snap to Grid
+      if (snapEnabled) {
+          x = Math.round(x);
+          y = Math.round(y);
+      }
+
+      // Orthogonal (Shift)
+      if (e.shiftKey && sketchPoints.length > 0) {
+          const last = sketchPoints[sketchPoints.length - 1];
+          const dx = Math.abs(x - last.x);
+          const dy = Math.abs(y - last.y);
+          if (dx > dy) y = last.y;
+          else x = last.x;
+          setOrthoEnabled(true);
+      } else {
+          setOrthoEnabled(false);
+      }
+
+      setMousePos({x, y});
+  };
+
+  const handleCanvasClick = () => {
+      if(mousePos) {
+          setSketchPoints(prev => [...prev, mousePos]);
+      }
   };
 
   const handleClearSketch = () => setSketchPoints([]);
@@ -82,7 +119,7 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
       setSketchPoints([]);
   };
 
-  // Draw Sketch
+  // Draw Sketch Loop
   useEffect(() => {
       if(!canvasRef.current) return;
       const ctx = canvasRef.current.getContext('2d');
@@ -91,12 +128,9 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
       const h = canvasRef.current.height;
       
       ctx.clearRect(0,0,w,h);
-      ctx.strokeStyle = '#34d399';
-      ctx.lineWidth = 2;
-      ctx.fillStyle = '#34d399';
       
       // Grid
-      ctx.strokeStyle = '#1e293b';
+      ctx.strokeStyle = '#334155';
       ctx.lineWidth = 1;
       ctx.beginPath();
       for(let i=0; i<=20; i++) {
@@ -107,20 +141,27 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
       }
       ctx.stroke();
 
-      // Points
+      // Axis
+      ctx.strokeStyle = '#64748b';
+      ctx.beginPath();
+      ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h);
+      ctx.moveTo(0, h/2); ctx.lineTo(w, h/2);
+      ctx.stroke();
+
+      const toPxX = (v: number) => (v + 10) / 20 * w;
+      const toPxY = (v: number) => (-v + 10) / 20 * h;
+
+      // Draw Points
       ctx.strokeStyle = '#10b981';
       ctx.lineWidth = 2;
+      ctx.fillStyle = '#10b981';
+      
       if(sketchPoints.length > 0) {
           ctx.beginPath();
-          // Map back from -10..10 to pixels
-          const toPxX = (v: number) => (v + 10) / 20 * w;
-          const toPxY = (v: number) => (-v + 10) / 20 * h;
-          
           ctx.moveTo(toPxX(sketchPoints[0].x), toPxY(sketchPoints[0].y));
           for(let i=1; i<sketchPoints.length; i++) {
               ctx.lineTo(toPxX(sketchPoints[i].x), toPxY(sketchPoints[i].y));
           }
-          if(sketchPoints.length > 2) ctx.closePath();
           ctx.stroke();
           
           sketchPoints.forEach(p => {
@@ -129,7 +170,34 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
               ctx.fill();
           });
       }
-  }, [sketchPoints]);
+
+      // Draw Ghost Line
+      if (mousePos && sketchPoints.length > 0) {
+          ctx.strokeStyle = '#34d399';
+          ctx.setLineDash([5, 5]);
+          ctx.beginPath();
+          const last = sketchPoints[sketchPoints.length - 1];
+          ctx.moveTo(toPxX(last.x), toPxY(last.y));
+          ctx.lineTo(toPxX(mousePos.x), toPxY(mousePos.y));
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Length Label
+          const dist = Math.sqrt(Math.pow(mousePos.x - last.x, 2) + Math.pow(mousePos.y - last.y, 2));
+          ctx.fillStyle = 'white';
+          ctx.font = '10px monospace';
+          ctx.fillText(`${dist.toFixed(1)}m`, toPxX(mousePos.x) + 10, toPxY(mousePos.y) - 10);
+      }
+
+      // Cursor
+      if (mousePos) {
+          ctx.beginPath();
+          ctx.arc(toPxX(mousePos.x), toPxY(mousePos.y), 4, 0, Math.PI*2);
+          ctx.strokeStyle = 'white';
+          ctx.stroke();
+      }
+
+  }, [sketchPoints, mousePos]);
 
   useEffect(() => {
       if (store.booleanOp && store.booleanTarget && store.selectedObjectIds.length > 0) {
@@ -150,6 +218,33 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
   return (
     <div className="absolute left-4 top-16 bottom-16 w-64 z-10 flex flex-col gap-2 overflow-y-auto custom-scrollbar pointer-events-none">
        
+       {store.activeTab === 'history' && (
+           <div className="bg-slate-900/80 p-4 rounded-2xl border border-slate-700 shadow-2xl backdrop-blur-md pointer-events-auto space-y-4 animate-fade-in flex flex-col max-h-[500px]">
+               <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Design History</h4>
+               <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3 pr-1">
+                   {store.historyEntries.length === 0 ? (
+                       <p className="text-xs text-slate-500 italic">No history yet.</p>
+                   ) : (
+                       store.historyEntries.map((entry, idx) => (
+                           <div key={entry.id} className="relative pl-4 border-l border-slate-700 last:border-0 group">
+                               <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-slate-800 border border-slate-600 group-hover:bg-emerald-500 group-hover:border-emerald-400 transition-colors"></div>
+                               <div className="bg-slate-800/50 p-2 rounded hover:bg-slate-700 transition-colors cursor-pointer" onClick={() => store.restoreHistoryEntry(entry)}>
+                                   <div className="flex justify-between items-start mb-1">
+                                       <span className="text-xs font-bold text-slate-300 truncate w-32">{entry.prompt}</span>
+                                       <span className="text-[9px] text-slate-500 font-mono">{formatTime(entry.timestamp)}</span>
+                                   </div>
+                                   <p className="text-[10px] text-slate-400 truncate">v{store.historyEntries.length - idx}</p>
+                               </div>
+                           </div>
+                       ))
+                   )}
+               </div>
+               <div className="text-[9px] text-slate-500 text-center border-t border-slate-700 pt-2">
+                   Click an entry to revert to that state.
+               </div>
+           </div>
+       )}
+
        {store.activeTab === 'parameters' && (
            <div className="bg-slate-900/80 p-4 rounded-2xl border border-slate-700 shadow-2xl backdrop-blur-md pointer-events-auto space-y-4 animate-fade-in">
                <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Parametric Constraints</h4>
@@ -215,21 +310,39 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
        {store.activeTab === 'sketch' && (
            <div className="bg-slate-900/80 p-4 rounded-2xl border border-slate-700 shadow-2xl backdrop-blur-md pointer-events-auto space-y-4 animate-fade-in">
                <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">2D Sketch Pad</h4>
-               <div className="bg-slate-800 rounded border border-slate-700 overflow-hidden cursor-crosshair">
+               <div className="bg-slate-800 rounded border border-slate-700 overflow-hidden cursor-crosshair relative">
                    <canvas 
                        ref={canvasRef} 
                        width={220} 
                        height={220} 
                        onClick={handleCanvasClick}
+                       onMouseMove={handleCanvasMouseMove}
+                       onMouseLeave={() => setMousePos(null)}
                        className="w-full h-auto block"
                    />
+                   <div className="absolute bottom-1 right-1 text-[9px] text-slate-500 bg-slate-900/50 px-1 rounded pointer-events-none">
+                       Shift: Ortho
+                   </div>
                </div>
-               <div className="flex justify-between text-xs text-slate-400">
-                   <span>Points: {sketchPoints.length}</span>
-                   <button onClick={handleClearSketch} className="hover:text-white">Clear</button>
+               
+               <div className="flex items-center justify-between">
+                   <div className="flex items-center gap-2">
+                       <input 
+                           type="checkbox" 
+                           checked={snapEnabled} 
+                           onChange={(e) => setSnapEnabled(e.target.checked)}
+                           className="accent-emerald-500 h-3 w-3"
+                       />
+                       <span className="text-xs text-slate-400">Snap Grid</span>
+                   </div>
+                   <button onClick={handleClearSketch} className="text-xs hover:text-white text-slate-400">Clear</button>
                </div>
+
                <div className="space-y-1">
-                   <label className="text-xs text-slate-300">Extrude Height</label>
+                   <div className="flex justify-between text-xs text-slate-300">
+                       <span>Extrude Height</span>
+                       <span>{extrudeHeight}m</span>
+                   </div>
                    <input 
                        type="range" min="0.1" max="10" step="0.1" 
                        value={extrudeHeight} 
@@ -240,7 +353,7 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
                <button 
                    onClick={handleExtrude}
                    disabled={sketchPoints.length < 3}
-                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded text-xs font-bold"
+                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded text-xs font-bold shadow-lg shadow-emerald-500/20"
                >
                    Extrude Shape
                </button>
@@ -506,6 +619,13 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
                            <span className="text-[10px] text-slate-500">Manufacturing Ready</span>
                        </div>
                        <svg className="w-5 h-5 text-slate-500 group-hover:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                   </button>
+                   <button onClick={() => handleExport('3mf')} className="flex items-center justify-between p-3 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 hover:border-cyan-500 group transition-all">
+                       <div className="flex flex-col text-left">
+                           <span className="text-sm font-bold text-white group-hover:text-cyan-400">3MF</span>
+                           <span className="text-[10px] text-slate-500">3D Print Package</span>
+                       </div>
+                       <svg className="w-5 h-5 text-slate-500 group-hover:text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
                    </button>
                    <button onClick={() => handleExport('usdz')} className="flex items-center justify-between p-3 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 hover:border-blue-500 group transition-all">
                        <div className="flex flex-col text-left">

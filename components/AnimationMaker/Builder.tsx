@@ -21,19 +21,19 @@ interface BuilderProps {
 }
 
 const MODE_CONFIG: Record<WorkspaceMode, { tabs: Tab[], label: string, icon: string }> = {
-  maker: { label: '3D Print', icon: '🖨️', tabs: ['tools', 'parameters', 'sketch', 'hierarchy', 'print', 'specs', 'export'] },
-  engineer: { label: 'CAD / Eng', icon: '⚙️', tabs: ['tools', 'parameters', 'sketch', 'hierarchy', 'specs', 'export'] },
-  designer: { label: 'Product Design', icon: '🎨', tabs: ['tools', 'parameters', 'material', 'environment', 'export', 'bookmarks'] },
-  game_dev: { label: 'Game Assets', icon: '🎮', tabs: ['tools', 'parameters', 'hierarchy', 'material', 'export'] },
-  architect: { label: 'Architecture', icon: '🏛️', tabs: ['tools', 'parameters', 'sketch', 'hierarchy', 'specs', 'environment', 'export', 'bookmarks'] },
-  animator: { label: 'Animation/VFX', icon: '🎬', tabs: ['tools', 'environment', 'material', 'export'] },
-  jewelry: { label: 'Jewelry Design', icon: '💎', tabs: ['tools', 'parameters', 'material', 'specs', 'environment', 'export'] },
-  medical: { label: 'Medical/Sci', icon: '🏥', tabs: ['tools', 'hierarchy', 'specs', 'print', 'export'] },
-  ecommerce: { label: 'E-commerce', icon: '🛒', tabs: ['tools', 'material', 'environment', 'export'] },
-  sculptor: { label: 'Digital Art', icon: '🗿', tabs: ['tools', 'material', 'environment', 'export'] },
-  automotive: { label: 'Automotive', icon: '🚗', tabs: ['tools', 'parameters', 'hierarchy', 'specs', 'material', 'environment', 'export'] },
-  fashion: { label: 'Fashion', icon: '👗', tabs: ['tools', 'material', 'environment', 'export'] },
-  education: { label: 'Learning', icon: '📚', tabs: ['tools', 'parameters', 'hierarchy', 'specs', 'export'] }
+  maker: { label: '3D Print', icon: '🖨️', tabs: ['tools', 'history', 'parameters', 'sketch', 'hierarchy', 'print', 'specs', 'export'] },
+  engineer: { label: 'CAD / Eng', icon: '⚙️', tabs: ['tools', 'history', 'parameters', 'sketch', 'hierarchy', 'specs', 'export'] },
+  designer: { label: 'Product Design', icon: '🎨', tabs: ['tools', 'history', 'parameters', 'material', 'environment', 'export', 'bookmarks'] },
+  game_dev: { label: 'Game Assets', icon: '🎮', tabs: ['tools', 'history', 'parameters', 'hierarchy', 'material', 'export'] },
+  architect: { label: 'Architecture', icon: '🏛️', tabs: ['tools', 'history', 'parameters', 'sketch', 'hierarchy', 'specs', 'environment', 'export', 'bookmarks'] },
+  animator: { label: 'Animation/VFX', icon: '🎬', tabs: ['tools', 'history', 'environment', 'material', 'export'] },
+  jewelry: { label: 'Jewelry Design', icon: '💎', tabs: ['tools', 'history', 'parameters', 'material', 'specs', 'environment', 'export'] },
+  medical: { label: 'Medical/Sci', icon: '🏥', tabs: ['tools', 'history', 'hierarchy', 'specs', 'print', 'export'] },
+  ecommerce: { label: 'E-commerce', icon: '🛒', tabs: ['tools', 'history', 'material', 'environment', 'export'] },
+  sculptor: { label: 'Digital Art', icon: '🗿', tabs: ['tools', 'history', 'material', 'environment', 'export'] },
+  automotive: { label: 'Automotive', icon: '🚗', tabs: ['tools', 'history', 'parameters', 'hierarchy', 'specs', 'material', 'environment', 'export'] },
+  fashion: { label: 'Fashion', icon: '👗', tabs: ['tools', 'history', 'material', 'environment', 'export'] },
+  education: { label: 'Learning', icon: '📚', tabs: ['tools', 'history', 'parameters', 'hierarchy', 'specs', 'export'] }
 };
 
 export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProject }) => {
@@ -171,7 +171,10 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       }
       const code = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imageToUse, project.category, workspaceMode);
       if (!code || code.length < 50) throw new Error("Generated code seems invalid.");
-      store.setHtmlCode(code, true);
+      
+      // Pass the prompt to history
+      store.setHtmlCode(code, true, store.prompt || "Generated Model");
+      
       store.setPrompt(''); 
       store.setRefImages([]);
     } catch (err: any) {
@@ -186,7 +189,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       store.setFixing(true);
       try {
           const fixed = await fixThreeJSCode(store.htmlCode, store.runtimeError);
-          store.setHtmlCode(fixed, true);
+          store.setHtmlCode(fixed, true, "Auto-Fix");
       } catch (e) {
           store.setError("Failed to auto-fix.");
       } finally {
@@ -202,7 +205,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       } catch (e) {} finally { store.setEnhancing(false); }
   };
 
-  const handleApplyCustomCode = () => { store.setHtmlCode(store.codeEdits, true); store.setShowCode(false); };
+  const handleApplyCustomCode = () => { store.setHtmlCode(store.codeEdits, true, "Manual Code Edit"); store.setShowCode(false); };
   const handleToolClick = (toolPrompt: string) => { store.setPrompt(toolPrompt); };
 
   const handleDownload = () => {

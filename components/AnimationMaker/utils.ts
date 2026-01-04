@@ -13,6 +13,19 @@ export const injectDriverScript = (html: string) => {
       base-uri 'none';
     ">`;
 
+    // Inject import map for fflate if it doesn't exist in generated code (it likely doesn't)
+    const importMap = `
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/",
+        "fflate": "https://esm.sh/fflate@^0.8.2"
+      }
+    }
+    </script>
+    `;
+
     const driverScript = `
     <script type="module">
       import * as THREE from 'three';
@@ -32,7 +45,6 @@ export const injectDriverScript = (html: string) => {
       import * as fflate from 'fflate';
 
       // --- GUI INTERCEPTION SHIM ---
-      // This allows us to read the AI-generated GUI and display it in our React panel.
       class MockGUI {
           constructor() {
               this.controllers = [];
@@ -64,7 +76,6 @@ export const injectDriverScript = (html: string) => {
               return folder;
           }
           sync() {
-              // Debounce sending to parent
               if(this.syncTimeout) clearTimeout(this.syncTimeout);
               this.syncTimeout = setTimeout(() => {
                   const serialize = (gui, folderName = '') => {
@@ -86,26 +97,97 @@ export const injectDriverScript = (html: string) => {
               }, 100);
           }
       }
-      // Overwrite the imported GUI if the script uses it
       window.GUI = MockGUI;
-      // Also catch if they import it as 'lil-gui' via map
       window.lil = { GUI: MockGUI };
 
+      // --- 3MF EXPORT LOGIC ---
+      window.export3MF = async () => {
+          // 1. Collect Geometries
+          const meshes = [];
+          window.scene.traverse(c => {
+              if (c.isMesh && c.name !== 'measureMarker' && !c.type.includes('Helper')) {
+                  meshes.push(c);
+              }
+          });
 
-      // --- 3MF EXPORTER (Custom using fflate) ---
-      class ThreeMFLoaderCustom {
-          parse(mesh) {
-             // Simplified 3MF Writer: 
-             // 1. Convert mesh to vertices/triangles XML
-             // 2. Wrap in OPCC structure
-             // Note: Implementing full 3MF is complex. 
-             // Strategy: Export as OBJ, zip it as a model? No, 3MF is specific XML.
-             // Fallback: We will alert the user if they try, or implement basic text generation.
-             // For this demo, let's export as STL and label it "3MF (Converted)" or skip.
-             // BETTER: Let's focus on the SKETCH feature which is the main gap requested.
-             return null;
-          }
-      }
+          if (meshes.length === 0) return;
+
+          // 2. Build 3D Model XML
+          let verticesXml = '';
+          let trianglesXml = '';
+          let vCount = 0;
+
+          // Simple merger for single object export
+          meshes.forEach(mesh => {
+              const geo = mesh.geometry.clone();
+              geo.applyMatrix4(mesh.matrixWorld);
+              if (!geo.index) {
+                  // Ensure indexed geometry
+                  const temp = BufferGeometryUtils.mergeVertices(geo);
+                  if (temp) { geo.dispose(); Object.assign(geo, temp); }
+              }
+              const pos = geo.attributes.position;
+              const idx = geo.index;
+
+              if (pos && idx) {
+                  for (let i = 0; i < pos.count; i++) {
+                      verticesXml += \`<vertex x="\${pos.getX(i)}" y="\${pos.getY(i)}" z="\${pos.getZ(i)}" />\`;
+                  }
+                  for (let i = 0; i < idx.count; i += 3) {
+                      trianglesXml += \`<triangle v1="\${idx.getX(i) + vCount}" v2="\${idx.getX(i+1) + vCount}" v3="\${idx.getX(i+2) + vCount}" />\`;
+                  }
+                  vCount += pos.count;
+              }
+          });
+
+          const modelXml = \`<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>
+  <object id="1" type="model">
+   <mesh>
+    <vertices>
+     \${verticesXml}
+    </vertices>
+    <triangles>
+     \${trianglesXml}
+    </triangles>
+   </mesh>
+  </object>
+ </resources>
+ <build>
+  <item objectid="1" />
+ </build>
+</model>\`;
+
+          // 3. Build content types and rels
+          const contentTypes = \`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+ <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
+ <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />
+</Types>\`;
+
+          const rels = \`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+ <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" />
+</Relationships>\`;
+
+          // 4. Zip it
+          const zipData = fflate.zipSync({
+              '[Content_Types].xml': fflate.strToU8(contentTypes),
+              '_rels/.rels': fflate.strToU8(rels),
+              '3D/3dmodel.model': fflate.strToU8(modelXml)
+          });
+
+          // 5. Download
+          const blob = new Blob([zipData], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'model.3mf';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+      };
 
       // --- WEB WORKER DEFINITION (Keep existing) ---
       const workerCode = \`
@@ -197,7 +279,7 @@ export const injectDriverScript = (html: string) => {
       let selectedObjects = []; 
       let updateGraphTimeout = null;
       let lodEnabled = true;
-      let globalGui = null; // Store reference to the mock GUI
+      let globalGui = null;
 
       // ... (Keep generateLOD, onerror, requestRender, render, disposeNode, updateSceneGraph, selectObject, getMainMesh, convertUnits, initMeasureTool, addMeasurePoint, clearMeasure, repairMesh, performBoolean, addPrimitive, generateSupports, applyDecimation, loadImportedModel)
       
@@ -301,8 +383,6 @@ export const injectDriverScript = (html: string) => {
         
         // NEW HANDLERS
         if (type === 'updateParam') {
-            // Find the controller in our mock GUI
-            // We assume 'params' object is globally available or attached to window.params if generated code adheres to prompt
             if (window.params && window.params[name] !== undefined) {
                 window.params[name] = value;
                 if (window.regenerate) window.regenerate();
@@ -311,6 +391,39 @@ export const injectDriverScript = (html: string) => {
         }
         if (type === 'extrudeSketch') {
             window.extrudeSketch(event.data.points, event.data.height);
+        }
+        // Export Handlers
+        if (type === 'exportModel') {
+            if (format === '3mf') window.export3MF();
+            else if (format === 'stl') {
+                const exporter = new window.STLExporter();
+                const result = exporter.parse(window.scene);
+                const blob = new Blob([result], { type: 'text/plain' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'model.stl';
+                link.click();
+            } else if (format === 'gltf') {
+                const exporter = new window.GLTFExporter();
+                exporter.parse(window.scene, (gltf) => {
+                    const output = JSON.stringify(gltf, null, 2);
+                    const blob = new Blob([output], { type: 'text/plain' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = 'model.gltf';
+                    link.click();
+                }, { binary: false });
+            } else if (format === 'usdz') {
+                // Simplified USDZ trigger
+                const exporter = new window.USDZExporter();
+                exporter.parse(window.scene).then((usdz) => {
+                    const blob = new Blob([usdz], { type: 'application/octet-stream' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = 'model.usdz';
+                    link.click();
+                });
+            }
         }
       });
       
@@ -324,11 +437,11 @@ export const injectDriverScript = (html: string) => {
     </script>
     `;
     
+    // Inject import map if <head> exists, else simple prepend
     if (html.includes('</head>')) {
-        return html.replace('</head>', `${cspMeta}${driverScript}</head>`);
-    } else if (html.includes('<body>')) {
-        return html.replace('<body>', `<head>${cspMeta}${driverScript}</head><body>`);
+        return html.replace('<head>', `<head>${cspMeta}${importMap}`)
+                   .replace('</head>', `${driverScript}</head>`);
     } else {
-        return `<!DOCTYPE html><html><head>${cspMeta}${driverScript}</head><body>${html}</body></html>`;
+        return `<!DOCTYPE html><html><head>${cspMeta}${importMap}${driverScript}</head><body>${html}</body></html>`;
     }
 };
