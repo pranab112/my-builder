@@ -12,7 +12,7 @@ export interface SavedProject {
 
 export type ViewState = 'dashboard' | 'create-details' | 'create-category' | 'builder';
 export type RenderMode = 'blueprint' | 'realistic' | 'wireframe' | 'normal' | 'analysis' | 'overhang' | 'slicer' | 'heatmap';
-export type Tab = 'tools' | 'hierarchy' | 'material' | 'specs' | 'environment' | 'export' | 'print' | 'bookmarks';
+export type Tab = 'tools' | 'hierarchy' | 'material' | 'specs' | 'environment' | 'export' | 'print' | 'bookmarks' | 'parameters' | 'sketch';
 export type GizmoMode = 'translate' | 'rotate' | 'scale' | 'measure' | 'none';
 export type PrinterPreset = 'ender3' | 'bambu' | 'prusa' | 'custom';
 export type MaterialType = 'pla' | 'petg' | 'abs' | 'tpu';
@@ -53,4 +53,14 @@ export interface GeometrySpecs {
   depth: number;
   tris: number;
   manifold?: boolean;
+}
+
+export interface ParameterControl {
+  name: string;
+  value: number | string | boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  type: 'number' | 'boolean' | 'string' | 'color' | 'button';
+  folder?: string;
 }

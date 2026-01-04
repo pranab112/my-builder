@@ -1,7 +1,7 @@
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useBuilderStore } from '../../stores/builderStore';
-import { PrinterPreset, WorkspaceMode } from './types';
+import { PrinterPreset, WorkspaceMode, ParameterControl } from './types';
 import { calculateFilamentCost } from '../../services/geometryCalculator';
 
 interface PanelsProps {
@@ -11,10 +11,12 @@ interface PanelsProps {
   handleAutoOrient: () => void;
   workspaceMode: WorkspaceMode;
   handleSelectObject?: (id: string | null) => void;
+  handleParameterChange?: (name: string, value: any) => void;
+  handleSketchExtrude?: (points: {x:number, y:number}[], height: number) => void;
 }
 
 const CAD_TOOLS = [
-  { id: 'fillet', label: 'Fillet Edges', prompt: 'Apply a smooth rounded fillet to all sharp edges of the selected part. Add a "Fillet Radius" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4c-4.418 0-8 3.582-8 8s3.582 8 8 8 8-3.582 8-8-3.582-8-8-3.582-8-8-8zm0 14c-3.314 0-6-2.686-6-6s2.686-6 6-6 6 2.686 6 6-2.686 6-6 6z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 9a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" /></svg> },
+  { id: 'fillet', label: 'Fillet Edges', prompt: 'Apply a smooth rounded fillet to all sharp edges of the selected part. Add a "Fillet Radius" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4c-4.418 0-8 3.582-8 8s3.582 8 8 8 8-3.582 8-8-3.582-8-8-3.582-8-8-3.582-8-8-8zm0 14c-3.314 0-6-2.686-6-6s2.686-6 6-6 6 2.686 6 6-2.686 6-6 6z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 9a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" /></svg> },
   { id: 'chamfer', label: 'Chamfer', prompt: 'Apply a 45-degree chamfer (flat bevel) to the edges. Add a "Chamfer Size" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6l4-4h8l4 4v12l-4 4H8l-4-4V6z" /></svg> },
   { id: 'shell', label: 'Shell', prompt: 'Hollow out the interior to create a shell. Add a "Wall Thickness" slider to the GUI.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 11l-4-2m4 2l4-2" /></svg> },
   { id: 'trim', label: 'Trim', prompt: 'Trim the geometry by cutting away the [SPECIFY PART]. Add a "Cut Position" slider.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0 0L2.121 2.121" /></svg> },
@@ -24,9 +26,14 @@ const CAD_TOOLS = [
   { id: 'cut', label: 'Section', prompt: 'Apply a clipping plane to create a section view. Add a slider to move the plane.', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg> },
 ];
 
-export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, sendViewCommand, handleAutoOrient, workspaceMode, handleSelectObject }) => {
+export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, sendViewCommand, handleAutoOrient, workspaceMode, handleSelectObject, handleParameterChange, handleSketchExtrude }) => {
   const store = useBuilderStore();
   
+  // Sketch State
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [sketchPoints, setSketchPoints] = useState<{x:number, y:number}[]>([]);
+  const [extrudeHeight, setExtrudeHeight] = useState(2);
+
   const { weight, cost } = store.specs 
     ? calculateFilamentCost(
         store.specs.width,
@@ -52,13 +59,77 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
   };
 
   const handleAddBookmark = () => {
-      // Request iframe to send camera state, handled in Builder.tsx listener
       window.postMessage({ type: 'requestCameraState' }, '*');
   };
 
   const handleRestoreBookmark = (bm: any) => {
       window.postMessage({ type: 'setCameraState', position: bm.position, target: bm.target }, '*');
   };
+
+  // Sketch Handlers
+  const handleCanvasClick = (e: React.MouseEvent) => {
+      if(!canvasRef.current) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width * 20 - 10; // Map to -10 to 10 coords
+      const y = -((e.clientY - rect.top) / rect.height * 20 - 10);
+      setSketchPoints(prev => [...prev, {x, y}]);
+  };
+
+  const handleClearSketch = () => setSketchPoints([]);
+  
+  const handleExtrude = () => {
+      if(handleSketchExtrude) handleSketchExtrude(sketchPoints, extrudeHeight);
+      setSketchPoints([]);
+  };
+
+  // Draw Sketch
+  useEffect(() => {
+      if(!canvasRef.current) return;
+      const ctx = canvasRef.current.getContext('2d');
+      if(!ctx) return;
+      const w = canvasRef.current.width;
+      const h = canvasRef.current.height;
+      
+      ctx.clearRect(0,0,w,h);
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 2;
+      ctx.fillStyle = '#34d399';
+      
+      // Grid
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for(let i=0; i<=20; i++) {
+          const x = i * (w/20);
+          ctx.moveTo(x, 0); ctx.lineTo(x, h);
+          const y = i * (h/20);
+          ctx.moveTo(0, y); ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+
+      // Points
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 2;
+      if(sketchPoints.length > 0) {
+          ctx.beginPath();
+          // Map back from -10..10 to pixels
+          const toPxX = (v: number) => (v + 10) / 20 * w;
+          const toPxY = (v: number) => (-v + 10) / 20 * h;
+          
+          ctx.moveTo(toPxX(sketchPoints[0].x), toPxY(sketchPoints[0].y));
+          for(let i=1; i<sketchPoints.length; i++) {
+              ctx.lineTo(toPxX(sketchPoints[i].x), toPxY(sketchPoints[i].y));
+          }
+          if(sketchPoints.length > 2) ctx.closePath();
+          ctx.stroke();
+          
+          sketchPoints.forEach(p => {
+              ctx.beginPath();
+              ctx.arc(toPxX(p.x), toPxY(p.y), 3, 0, Math.PI*2);
+              ctx.fill();
+          });
+      }
+  }, [sketchPoints]);
 
   useEffect(() => {
       if (store.booleanOp && store.booleanTarget && store.selectedObjectIds.length > 0) {
@@ -79,9 +150,105 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
   return (
     <div className="absolute left-4 top-16 bottom-16 w-64 z-10 flex flex-col gap-2 overflow-y-auto custom-scrollbar pointer-events-none">
        
+       {store.activeTab === 'parameters' && (
+           <div className="bg-slate-900/80 p-4 rounded-2xl border border-slate-700 shadow-2xl backdrop-blur-md pointer-events-auto space-y-4 animate-fade-in">
+               <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Parametric Constraints</h4>
+               {store.parameters.length === 0 ? (
+                   <p className="text-xs text-slate-500 italic text-center p-4">No parameters exposed by model.</p>
+               ) : (
+                   <div className="space-y-3">
+                       {store.parameters.map((param, idx) => (
+                           <div key={idx} className="space-y-1">
+                               <div className="flex justify-between text-xs text-slate-300">
+                                   <span>{param.name}</span>
+                                   <span className="font-mono text-[10px]">{typeof param.value === 'number' ? param.value.toFixed(2) : param.value}</span>
+                               </div>
+                               {param.type === 'number' && (
+                                   <input 
+                                       type="range" 
+                                       min={param.min || 0} 
+                                       max={param.max || 100} 
+                                       step={param.step || 1} 
+                                       value={param.value as number}
+                                       onChange={(e) => {
+                                           const val = parseFloat(e.target.value);
+                                           store.updateParameter(param.name, val);
+                                           if(handleParameterChange) handleParameterChange(param.name, val);
+                                       }}
+                                       className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                                   />
+                               )}
+                               {param.type === 'boolean' && (
+                                   <div className="flex items-center gap-2">
+                                       <input 
+                                           type="checkbox"
+                                           checked={param.value as boolean}
+                                           onChange={(e) => {
+                                               const val = e.target.checked;
+                                               store.updateParameter(param.name, val);
+                                               if(handleParameterChange) handleParameterChange(param.name, val);
+                                           }}
+                                           className="accent-indigo-500"
+                                       />
+                                       <span className="text-xs text-slate-500">Enabled</span>
+                                   </div>
+                               )}
+                               {param.type === 'color' && (
+                                   <input 
+                                       type="color"
+                                       value={param.value as string}
+                                       onChange={(e) => {
+                                           const val = e.target.value;
+                                           store.updateParameter(param.name, val);
+                                           if(handleParameterChange) handleParameterChange(param.name, val);
+                                       }}
+                                       className="w-full h-6 bg-transparent rounded cursor-pointer"
+                                   />
+                               )}
+                           </div>
+                       ))}
+                   </div>
+               )}
+           </div>
+       )}
+
+       {store.activeTab === 'sketch' && (
+           <div className="bg-slate-900/80 p-4 rounded-2xl border border-slate-700 shadow-2xl backdrop-blur-md pointer-events-auto space-y-4 animate-fade-in">
+               <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">2D Sketch Pad</h4>
+               <div className="bg-slate-800 rounded border border-slate-700 overflow-hidden cursor-crosshair">
+                   <canvas 
+                       ref={canvasRef} 
+                       width={220} 
+                       height={220} 
+                       onClick={handleCanvasClick}
+                       className="w-full h-auto block"
+                   />
+               </div>
+               <div className="flex justify-between text-xs text-slate-400">
+                   <span>Points: {sketchPoints.length}</span>
+                   <button onClick={handleClearSketch} className="hover:text-white">Clear</button>
+               </div>
+               <div className="space-y-1">
+                   <label className="text-xs text-slate-300">Extrude Height</label>
+                   <input 
+                       type="range" min="0.1" max="10" step="0.1" 
+                       value={extrudeHeight} 
+                       onChange={(e) => setExtrudeHeight(parseFloat(e.target.value))}
+                       className="w-full h-1 bg-slate-700 rounded-lg accent-emerald-500" 
+                   />
+               </div>
+               <button 
+                   onClick={handleExtrude}
+                   disabled={sketchPoints.length < 3}
+                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded text-xs font-bold"
+               >
+                   Extrude Shape
+               </button>
+           </div>
+       )}
+
        {store.activeTab === 'tools' && (
            <div className="bg-slate-900/80 p-3 rounded-2xl border border-slate-700 shadow-2xl backdrop-blur-md pointer-events-auto animate-fade-in space-y-4">
-              
               {/* GIZMOS */}
               <div>
                   <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">Gizmos & Measure</h4>
@@ -346,6 +513,13 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
                            <span className="text-[10px] text-slate-500">Apple AR Ready</span>
                        </div>
                        <svg className="w-5 h-5 text-slate-500 group-hover:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" /></svg>
+                   </button>
+                   <button onClick={() => alert("STEP export requires backend processing. This is a placeholder for future implementation.")} className="flex items-center justify-between p-3 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 hover:border-slate-500 group transition-all opacity-70">
+                       <div className="flex flex-col text-left">
+                           <span className="text-sm font-bold text-slate-300 group-hover:text-white">STEP (Beta)</span>
+                           <span className="text-[10px] text-slate-500">CAD Exchange</span>
+                       </div>
+                       <span className="text-[10px] bg-slate-700 px-2 py-1 rounded">Soon</span>
                    </button>
               </div>
            </div>

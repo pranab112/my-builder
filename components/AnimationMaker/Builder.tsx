@@ -21,19 +21,19 @@ interface BuilderProps {
 }
 
 const MODE_CONFIG: Record<WorkspaceMode, { tabs: Tab[], label: string, icon: string }> = {
-  maker: { label: '3D Print', icon: '🖨️', tabs: ['tools', 'hierarchy', 'print', 'specs', 'export'] },
-  engineer: { label: 'CAD / Eng', icon: '⚙️', tabs: ['tools', 'hierarchy', 'specs', 'export'] },
-  designer: { label: 'Product Design', icon: '🎨', tabs: ['tools', 'material', 'environment', 'export', 'bookmarks'] },
-  game_dev: { label: 'Game Assets', icon: '🎮', tabs: ['tools', 'hierarchy', 'material', 'export'] },
-  architect: { label: 'Architecture', icon: '🏛️', tabs: ['tools', 'hierarchy', 'specs', 'environment', 'export', 'bookmarks'] },
+  maker: { label: '3D Print', icon: '🖨️', tabs: ['tools', 'parameters', 'sketch', 'hierarchy', 'print', 'specs', 'export'] },
+  engineer: { label: 'CAD / Eng', icon: '⚙️', tabs: ['tools', 'parameters', 'sketch', 'hierarchy', 'specs', 'export'] },
+  designer: { label: 'Product Design', icon: '🎨', tabs: ['tools', 'parameters', 'material', 'environment', 'export', 'bookmarks'] },
+  game_dev: { label: 'Game Assets', icon: '🎮', tabs: ['tools', 'parameters', 'hierarchy', 'material', 'export'] },
+  architect: { label: 'Architecture', icon: '🏛️', tabs: ['tools', 'parameters', 'sketch', 'hierarchy', 'specs', 'environment', 'export', 'bookmarks'] },
   animator: { label: 'Animation/VFX', icon: '🎬', tabs: ['tools', 'environment', 'material', 'export'] },
-  jewelry: { label: 'Jewelry Design', icon: '💎', tabs: ['tools', 'material', 'specs', 'environment', 'export'] },
+  jewelry: { label: 'Jewelry Design', icon: '💎', tabs: ['tools', 'parameters', 'material', 'specs', 'environment', 'export'] },
   medical: { label: 'Medical/Sci', icon: '🏥', tabs: ['tools', 'hierarchy', 'specs', 'print', 'export'] },
   ecommerce: { label: 'E-commerce', icon: '🛒', tabs: ['tools', 'material', 'environment', 'export'] },
   sculptor: { label: 'Digital Art', icon: '🗿', tabs: ['tools', 'material', 'environment', 'export'] },
-  automotive: { label: 'Automotive', icon: '🚗', tabs: ['tools', 'hierarchy', 'specs', 'material', 'environment', 'export'] },
+  automotive: { label: 'Automotive', icon: '🚗', tabs: ['tools', 'parameters', 'hierarchy', 'specs', 'material', 'environment', 'export'] },
   fashion: { label: 'Fashion', icon: '👗', tabs: ['tools', 'material', 'environment', 'export'] },
-  education: { label: 'Learning', icon: '📚', tabs: ['tools', 'hierarchy', 'specs', 'export'] }
+  education: { label: 'Learning', icon: '📚', tabs: ['tools', 'parameters', 'hierarchy', 'specs', 'export'] }
 };
 
 export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProject }) => {
@@ -76,6 +76,9 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
               position,
               target
           });
+      }
+      if (event.data.type === 'guiConfig') {
+          store.setParameters(event.data.controls);
       }
     };
     window.addEventListener('message', handleMessage);
@@ -121,6 +124,8 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
   const handleSelectObject = (id: string | null) => iframeRef.current?.contentWindow?.postMessage({ type: 'selectObject', objectId: id }, '*');
   const handleCaptureBookmark = () => iframeRef.current?.contentWindow?.postMessage({ type: 'requestCameraState' }, '*');
   const handleRestoreBookmark = (bm: any) => iframeRef.current?.contentWindow?.postMessage({ type: 'setCameraState', position: bm.position, target: bm.target }, '*');
+  const handleParameterChange = (name: string, value: any) => iframeRef.current?.contentWindow?.postMessage({ type: 'updateParam', name, value }, '*');
+  const handleSketchExtrude = (points: {x:number, y:number}[], height: number) => iframeRef.current?.contentWindow?.postMessage({ type: 'extrudeSketch', points, height }, '*');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -289,6 +294,8 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
                     handleAutoOrient={handleAutoOrient}
                     workspaceMode={workspaceMode}
                     handleSelectObject={handleSelectObject}
+                    handleParameterChange={handleParameterChange}
+                    handleSketchExtrude={handleSketchExtrude}
                 />
            )}
            <BuilderStatusBar onAutoFix={handleAutoFix} />
