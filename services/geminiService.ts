@@ -31,28 +31,126 @@ const getJSON = (text: string): any => {
     }
 };
 
+// AI Output Validation and Cleaning
+interface ValidationResult {
+    isValid: boolean;
+    cleanedCode: string;
+    warnings: string[];
+    errors: string[];
+}
+
+const validateAndCleanCode = (code: string): ValidationResult => {
+    const warnings: string[] = [];
+    const errors: string[] = [];
+
+    // Step 1: Clean markdown artifacts
+    let cleaned = code
+        .replace(/```javascript\n?/gi, '')
+        .replace(/```js\n?/gi, '')
+        .replace(/```html\n?/gi, '')
+        .replace(/```\n?/g, '')
+        .trim();
+
+    // Step 2: Check for dangerous patterns
+    const dangerousPatterns = [
+        { pattern: /\beval\s*\(/gi, message: 'eval() is not allowed' },
+        { pattern: /\bnew\s+Function\s*\(/gi, message: 'new Function() is not allowed' },
+        { pattern: /\bdocument\.write\s*\(/gi, message: 'document.write() is not allowed' },
+        { pattern: /fetch\s*\(\s*['"`]http/gi, message: 'External fetch requests are not allowed' },
+        { pattern: /XMLHttpRequest/gi, message: 'XMLHttpRequest is not allowed' },
+        { pattern: /\.innerHTML\s*=/gi, message: 'innerHTML assignment is discouraged' },
+    ];
+
+    for (const { pattern, message } of dangerousPatterns) {
+        if (pattern.test(cleaned)) {
+            warnings.push(message);
+        }
+    }
+
+    // Step 3: Check for HTML artifacts that shouldn't be there
+    if (cleaned.includes('<!DOCTYPE') || cleaned.includes('<html')) {
+        warnings.push('AI returned HTML structure when pure JS was expected. Attempting to extract JS code.');
+
+        // Try to extract JS from script tags
+        const scriptMatch = cleaned.match(/<script[^>]*>([\s\S]*?)<\/script>/gi);
+        if (scriptMatch) {
+            // Extract content from script tags
+            const jsCode = scriptMatch
+                .map(s => s.replace(/<script[^>]*>/gi, '').replace(/<\/script>/gi, ''))
+                .join('\n');
+            cleaned = jsCode.trim();
+        }
+    }
+
+    // Step 4: Check for import statements (not allowed in our environment)
+    if (/^\s*import\s+/m.test(cleaned)) {
+        warnings.push('Import statements detected - these are handled by the environment. Removing them.');
+        cleaned = cleaned.replace(/^\s*import\s+.*?[;\n]/gm, '// [REMOVED IMPORT]\n');
+    }
+
+    // Step 5: Check for scene/camera/renderer creation (not allowed)
+    if (/new\s+THREE\.Scene\s*\(/gi.test(cleaned)) {
+        warnings.push('Scene creation detected - using existing window.scene instead.');
+        cleaned = cleaned.replace(/const\s+scene\s*=\s*new\s+THREE\.Scene\s*\([^)]*\)\s*;?/gi, '// Using window.scene instead');
+        cleaned = cleaned.replace(/let\s+scene\s*=\s*new\s+THREE\.Scene\s*\([^)]*\)\s*;?/gi, '// Using window.scene instead');
+        cleaned = cleaned.replace(/var\s+scene\s*=\s*new\s+THREE\.Scene\s*\([^)]*\)\s*;?/gi, '// Using window.scene instead');
+    }
+
+    if (/new\s+THREE\.(WebGLRenderer|PerspectiveCamera)\s*\(/gi.test(cleaned)) {
+        warnings.push('Renderer/Camera creation detected - using existing window.renderer/camera instead.');
+    }
+
+    // Step 6: Replace bare 'scene.' with 'window.scene.'
+    cleaned = cleaned.replace(/(?<!window\.)scene\.add\(/g, 'window.scene.add(');
+
+    // Step 7: Basic syntax check (try to parse as a function body)
+    try {
+        // Wrap in function to check if it's valid JS
+        new Function(cleaned);
+    } catch (e: any) {
+        errors.push(`Syntax error in generated code: ${e.message}`);
+    }
+
+    // Log warnings/errors
+    if (warnings.length > 0) {
+        console.warn('[AI Validation Warnings]', warnings);
+    }
+    if (errors.length > 0) {
+        console.error('[AI Validation Errors]', errors);
+    }
+
+    return {
+        isValid: errors.length === 0,
+        cleanedCode: cleaned,
+        warnings,
+        errors
+    };
+};
+
 export const fixThreeJSCode = async (code: string, error: string): Promise<string> => {
     const response = await backend.ai.generateContent({
         model: 'gemini-3-pro-preview',
         contents: `Fix the following Three.js code which produced this runtime error: "${error}".
-        
-        CRITICAL RULES:
-        1. Fix the specific error mentioned.
-        2. DO NOT delete existing logic or features unless they are the cause of the error.
-        3. Ensure the result is a COMPLETE, self-contained HTML file.
-        4. Do NOT use import maps (they are pre-injected in this environment). Use standard imports provided in the original code.
-        5. Ensure 'window.scene', 'window.camera', etc., are still assigned.
-        
-        Code to Fix:
-        ${code}
-        
-        Return ONLY the fixed full HTML code.`,
+
+CRITICAL RULES:
+1. Fix the specific error mentioned
+2. DO NOT delete existing logic unless it causes the error
+3. Return ONLY pure JavaScript code (no HTML, no imports)
+4. The environment provides: THREE, window.scene, window.camera, window.renderer, window.controls
+5. Use window.scene.add() to add objects
+
+Code to Fix:
+${code}
+
+Return ONLY the fixed JavaScript code.`,
         config: { thinkingConfig: { thinkingBudget: 2048 } }
     });
-    
+
     let text = getText(response);
-    text = text.replace(/```html/g, '').replace(/```/g, '');
-    return text;
+
+    // Validate and clean the output
+    const validation = validateAndCleanCode(text);
+    return validation.cleanedCode;
 };
 
 // Ecom Designer
@@ -248,27 +346,79 @@ export const generateAnimationCode = async (
     workspaceMode: WorkspaceMode
 ): Promise<string> => {
 
-    const systemPrompt = `You are an expert Three.js developer building a parametric 3D modeling tool.
-    Mode: ${workspaceMode} (${category}).
+    const systemPrompt = `You are an expert Three.js developer. Generate ONLY JavaScript code for a 3D modeling tool.
 
-    Your goal: Generate a script that constructs a 3D scene/model based on the user prompt.
+MODE: ${workspaceMode} (${category})
 
-    CRITICAL ENVIRONMENT DETAILS:
-    1. The environment has a pre-loaded 'window.scene', 'window.camera', 'window.renderer', 'window.controls'.
-    2. DO NOT create scene/camera/renderer. Use the existing global variables.
-    3. You must create meshes/lights and add them to 'window.scene'.
-    4. If the user asks for a specific shape, use Three.js geometries or CSG.
-    5. If 'imageToUse' is provided, load it as a texture.
-    6. Expose key parameters (like dimensions, colors) to the GUI using:
-       'new window.GUI().add(object, "prop", min, max)'.
+═══════════════════════════════════════════════════════════════════════════════
+CRITICAL: OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════════════════════
+Return ONLY pure JavaScript code. NO HTML tags, NO imports, NO scene/camera/renderer creation.
+Your code will be automatically wrapped and executed in a pre-configured Three.js environment.
 
-    Return ONLY the code inside the script tag (or just the JS logic if updating).
-    Actually, return full HTML structure but assume the driver script is injected by the host.
-    However, for simplicity in this system, provide the FULL HTML including your logic in a <script type="module">.
-    The host will inject the necessary import maps and driver setup code. You focus on the logic that runs AFTER init.
+WRONG OUTPUT (will break):
+\`\`\`
+<!DOCTYPE html>
+<html>
+<script type="module">
+import * as THREE from 'three';
+const scene = new THREE.Scene();
+\`\`\`
 
-    Use 'window.scene.add(mesh)' to show objects.
-    `;
+CORRECT OUTPUT:
+\`\`\`
+// Create geometry and material
+const geometry = new THREE.BoxGeometry(2, 2, 2);
+const material = new THREE.MeshStandardMaterial({ color: 0x6366f1 });
+const cube = new THREE.Mesh(geometry, material);
+cube.name = "MyCube";
+cube.position.y = 1;
+window.scene.add(cube);
+\`\`\`
+
+═══════════════════════════════════════════════════════════════════════════════
+AVAILABLE GLOBALS (already initialized, DO NOT recreate):
+═══════════════════════════════════════════════════════════════════════════════
+- THREE              → Full Three.js library (THREE.BoxGeometry, THREE.Mesh, etc.)
+- window.scene       → THREE.Scene instance (add objects here)
+- window.camera      → THREE.PerspectiveCamera (positioned at 5,5,5)
+- window.renderer    → THREE.WebGLRenderer (shadows enabled)
+- window.controls    → OrbitControls instance
+- window.GUI         → GUI class for parameter controls
+
+═══════════════════════════════════════════════════════════════════════════════
+ADDING OBJECTS TO SCENE:
+═══════════════════════════════════════════════════════════════════════════════
+Always use: window.scene.add(yourMesh)
+Always set: mesh.name = "DescriptiveName"
+
+═══════════════════════════════════════════════════════════════════════════════
+GUI CONTROLS (optional but recommended):
+═══════════════════════════════════════════════════════════════════════════════
+const params = { width: 2, height: 2, color: 0x6366f1 };
+const gui = new window.GUI();
+gui.add(params, 'width', 0.1, 10).name('Width').onChange(updateMesh);
+gui.add(params, 'height', 0.1, 10).name('Height').onChange(updateMesh);
+gui.addColor(params, 'color').name('Color').onChange(updateMesh);
+
+═══════════════════════════════════════════════════════════════════════════════
+MATERIALS (use MeshStandardMaterial for best results):
+═══════════════════════════════════════════════════════════════════════════════
+const material = new THREE.MeshStandardMaterial({
+  color: 0x6366f1,
+  roughness: 0.4,
+  metalness: 0.1
+});
+
+═══════════════════════════════════════════════════════════════════════════════
+REMEMBER:
+═══════════════════════════════════════════════════════════════════════════════
+1. Output ONLY JavaScript - no HTML, no imports, no module syntax
+2. Use window.scene.add() to add objects
+3. Always name your meshes with mesh.name = "..."
+4. Position objects above the grid (y > 0) so they're visible
+5. Use MeshStandardMaterial for objects (lighting is pre-configured)
+`;
 
     const textContent = `User Prompt: ${prompt}.
         ${existingCode ? `Existing Code (Update this): \n${existingCode}` : ''}`;
@@ -295,18 +445,17 @@ export const generateAnimationCode = async (
                     },
                     { text: textContent + `
 
-CRITICAL INSTRUCTIONS FOR IMAGE ANALYSIS:
-1. Carefully analyze the provided reference image
-2. Identify the main geometric shapes, proportions, and structural elements
-3. Note the approximate dimensions and scale relationships
-4. Identify key features like windows, doors, roof style, textures
-5. Create a Three.js 3D model that accurately represents the image
+IMAGE ANALYSIS INSTRUCTIONS:
+1. Analyze the reference image for geometric shapes and proportions
+2. Identify structural elements, colors, and textures
+3. Create Three.js meshes that represent the image accurately
 
-Generate a complete, working Three.js scene with:
-- Accurate geometry matching the reference image
-- Proper materials and colors
-- GUI controls for adjusting dimensions
-- Good lighting and shadows` }
+OUTPUT REQUIREMENTS (same as above):
+- Return ONLY pure JavaScript code
+- NO HTML, NO imports, NO scene creation
+- Use window.scene.add() to add objects
+- Add GUI controls for key parameters
+- Name each mesh descriptively` }
                 ]
             };
         } else {
@@ -324,12 +473,24 @@ Generate a complete, working Three.js scene with:
         });
 
         let text = getText(response);
-        const result = text.replace(/```html/g, '').replace(/```/g, '');
+
+        // Validate and clean the AI output
+        const validation = validateAndCleanCode(text);
 
         // Debug: Log API response
-        debug.generationAPIResponse(result.length, false);
+        debug.generationAPIResponse(validation.cleanedCode.length, false);
 
-        return result;
+        // Log validation results for debugging
+        if (validation.warnings.length > 0) {
+            console.log('[AI Code Validation] Warnings:', validation.warnings);
+        }
+
+        if (!validation.isValid) {
+            console.error('[AI Code Validation] Errors:', validation.errors);
+            // Still return the cleaned code, let the iframe handle runtime errors
+        }
+
+        return validation.cleanedCode;
     } catch (error: any) {
         debug.generationAPIResponse(0, true);
         throw error;

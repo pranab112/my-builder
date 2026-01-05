@@ -853,28 +853,73 @@ export const injectDriverScript = (html: string) => {
     </script>
     `;
 
-    let clean = html.replace(/<script type="importmap">[\s\S]*?<\/script>/gi, '');
+    // Step 1: Clean up markdown artifacts from AI response
+    let clean = html
+        .replace(/```javascript\n?/gi, '')
+        .replace(/```js\n?/gi, '')
+        .replace(/```html\n?/gi, '')
+        .replace(/```\n?/g, '')
+        .replace(/<script type="importmap">[\s\S]*?<\/script>/gi, '')
+        .trim();
 
-    // Check if AI returned just JavaScript code (no HTML structure)
-    // Common indicators: starts with import, const, let, var, function, //, or just plain JS code
-    const trimmed = clean.trim();
-    const looksLikeJustJS = !trimmed.includes('<html') &&
-                           !trimmed.includes('<!DOCTYPE') &&
-                           !trimmed.includes('<body') &&
-                           (trimmed.startsWith('import ') ||
-                            trimmed.startsWith('const ') ||
-                            trimmed.startsWith('let ') ||
-                            trimmed.startsWith('var ') ||
-                            trimmed.startsWith('function ') ||
-                            trimmed.startsWith('//') ||
-                            trimmed.startsWith('/*') ||
-                            /^[a-zA-Z_$]/.test(trimmed)); // Starts with identifier
+    // Step 2: Detect if AI returned pure JavaScript (our new expected format)
+    const hasHTMLStructure = clean.includes('<html') ||
+                             clean.includes('<!DOCTYPE') ||
+                             clean.includes('<body') ||
+                             clean.includes('<head');
 
-    if (looksLikeJustJS && !trimmed.includes('<script')) {
-        // Wrap raw JS in a module script
-        console.log('[Driver Inject] Detected raw JS code, wrapping in script tag');
-        clean = `<!DOCTYPE html><html><head></head><body><script type="module">${clean}</script></body></html>`;
+    const hasScriptTag = clean.includes('<script');
+
+    // Check if it looks like pure JS code
+    const looksLikeJS = /^(\/\/|\/\*|const |let |var |function |class |async |await |import |export |window\.|THREE\.|new )/.test(clean) ||
+                        /^[a-zA-Z_$][a-zA-Z0-9_$]*\s*[=\(]/.test(clean);
+
+    // Step 3: Wrap appropriately
+    if (!hasHTMLStructure && !hasScriptTag && looksLikeJS) {
+        // Pure JS code - wrap in a script that runs AFTER driver initializes
+        console.log('[Driver Inject] Detected pure JS code, wrapping with delayed execution');
+
+        // The user code runs after driver is ready
+        // We use a flag to ensure code only runs once
+        const userCodeScript = `
+        <script type="module">
+            // User-generated code - runs after driver initializes
+            let _userCodeExecuted = false;
+
+            function executeUserCode() {
+                if (_userCodeExecuted) return;
+                _userCodeExecuted = true;
+                console.log('[ProShot] Executing user code...');
+                try {
+                    ${clean}
+                } catch(err) {
+                    console.error('[User Code Error]', err);
+                    window.parent.postMessage({ type: 'error', message: err.message }, '*');
+                }
+            }
+
+            // Listen for sceneReady event from driver
+            window.addEventListener('message', function onReady(e) {
+                if (e.data && e.data.type === 'sceneReady') {
+                    window.removeEventListener('message', onReady);
+                    executeUserCode();
+                }
+            });
+
+            // Fallback: if scene is already ready, execute after short delay
+            setTimeout(() => {
+                if (window._realScene && !_userCodeExecuted) {
+                    executeUserCode();
+                }
+            }, 300);
+        </script>`;
+
+        clean = `<!DOCTYPE html><html><head></head><body>${userCodeScript}</body></html>`;
+    } else if (!hasHTMLStructure && hasScriptTag) {
+        // Has script tag but no HTML structure - wrap in HTML
+        clean = `<!DOCTYPE html><html><head></head><body>${clean}</body></html>`;
     } else if (!clean.includes('<head>')) {
+        // Has some HTML but no head - add structure
         clean = `<!DOCTYPE html><html><head></head><body>${clean}</body></html>`;
     }
 
