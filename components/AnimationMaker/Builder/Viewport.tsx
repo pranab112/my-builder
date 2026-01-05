@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useEffect, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useBuilderStore } from '../../../stores/builderStore';
 import { ViewCube } from '../ViewCube';
 import { Button } from '../../Button';
@@ -15,16 +15,100 @@ interface BuilderViewportProps {
   cmdKey: string;
 }
 
-export const BuilderViewport: React.FC<BuilderViewportProps> = ({ 
-  iframeRef, 
-  injectContextAndDriver, 
-  onApplyCustomCode, 
-  sendViewCommand, 
+export const BuilderViewport: React.FC<BuilderViewportProps> = ({
+  iframeRef,
+  injectContextAndDriver,
+  onApplyCustomCode,
+  sendViewCommand,
   takeSnapshot,
   activeModeTabs,
   cmdKey
 }) => {
   const store = useBuilderStore();
+
+  // Use a key to force iframe remount and ensure clean WebGL context
+  const [iframeKey, setIframeKey] = useState(0);
+  const prevHtmlRef = useRef<string | null>(null);
+  const lastIframeCreateTime = useRef<number>(0);
+  const MIN_IFRAME_INTERVAL = 2000; // Minimum 2 seconds between iframe recreations
+
+  // Cleanup WebGL contexts - more aggressive approach
+  const disposeWebGL = useCallback(() => {
+    if (iframeRef.current?.contentWindow) {
+      try {
+        const win = iframeRef.current.contentWindow as any;
+
+        // Stop any animation loops first
+        if (win.cancelAnimationFrame && win._animationFrameId) {
+          win.cancelAnimationFrame(win._animationFrameId);
+        }
+
+        // Dispose renderer
+        if (win.renderer) {
+          win.renderer.dispose();
+          win.renderer.forceContextLoss();
+          const gl = win.renderer.getContext();
+          if (gl) {
+            const ext = gl.getExtension('WEBGL_lose_context');
+            if (ext) ext.loseContext();
+          }
+          win.renderer.domElement = null;
+          win.renderer = null;
+        }
+
+        // Dispose scene objects
+        if (win.scene) {
+          win.scene.traverse((obj: any) => {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+              if (Array.isArray(obj.material)) {
+                obj.material.forEach((m: any) => m.dispose());
+              } else {
+                obj.material.dispose();
+              }
+            }
+            if (obj.texture) obj.texture.dispose();
+          });
+          win.scene.clear();
+          win.scene = null;
+        }
+
+        // Clear other globals
+        win.camera = null;
+        win.controls = null;
+      } catch (e) {
+        // Iframe might be cross-origin or already disposed
+      }
+    }
+  }, [iframeRef]);
+
+  // Use layout effect to dispose BEFORE render (synchronous)
+  useLayoutEffect(() => {
+    if (prevHtmlRef.current !== null && prevHtmlRef.current !== store.htmlCode) {
+      const now = Date.now();
+      const timeSinceLastCreate = now - lastIframeCreateTime.current;
+
+      // Rate limit: Only recreate iframe if enough time has passed
+      if (timeSinceLastCreate >= MIN_IFRAME_INTERVAL) {
+        // HTML changed - dispose old context before new iframe loads
+        disposeWebGL();
+        // Force iframe remount by changing key
+        setIframeKey(k => k + 1);
+        lastIframeCreateTime.current = now;
+      } else {
+        // Still update the content but don't force remount
+        console.log('[Viewport] Rate limiting iframe recreation, skipping key change');
+      }
+    }
+    prevHtmlRef.current = store.htmlCode;
+  }, [store.htmlCode, disposeWebGL]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      disposeWebGL();
+    };
+  }, [disposeWebGL]);
 
   return (
     <div className="flex-1 bg-slate-900/50 border border-slate-800 rounded-3xl shadow-2xl p-2 flex flex-col relative overflow-hidden backdrop-blur-sm">
@@ -70,7 +154,7 @@ export const BuilderViewport: React.FC<BuilderViewportProps> = ({
                 <textarea value={store.codeEdits} onChange={(e) => store.setCodeEdits(e.target.value)} className="flex-1 w-full bg-slate-950 text-emerald-400 font-mono text-xs p-4 resize-none focus:outline-none" spellCheck={false}/>
               </div>
             ) : (
-              <iframe ref={iframeRef} srcDoc={injectContextAndDriver(store.htmlCode)} title="3D Preview" className="w-full h-full border-0" sandbox="allow-scripts allow-same-origin allow-downloads" />
+              <iframe key={iframeKey} ref={iframeRef} srcDoc={injectContextAndDriver(store.htmlCode)} title="3D Preview" className="w-full h-full border-0" sandbox="allow-scripts allow-same-origin allow-downloads" />
             )}
             
             {!store.showCode && (

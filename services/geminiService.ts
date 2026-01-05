@@ -1,6 +1,7 @@
 
 import { backend } from './backend';
 import { WorkspaceMode } from '../components/AnimationMaker/types';
+import { debug } from './debugService';
 
 // Types
 export interface CategorySuggestion {
@@ -240,46 +241,97 @@ export const enhanceUserPrompt = async (prompt: string, category: string, mode: 
 };
 
 export const generateAnimationCode = async (
-    prompt: string, 
-    existingCode: string | undefined, 
-    imageToUse: string | undefined, 
-    category: string, 
+    prompt: string,
+    existingCode: string | undefined,
+    imageToUse: string | undefined,
+    category: string,
     workspaceMode: WorkspaceMode
 ): Promise<string> => {
-    
+
     const systemPrompt = `You are an expert Three.js developer building a parametric 3D modeling tool.
     Mode: ${workspaceMode} (${category}).
-    
+
     Your goal: Generate a script that constructs a 3D scene/model based on the user prompt.
-    
+
     CRITICAL ENVIRONMENT DETAILS:
     1. The environment has a pre-loaded 'window.scene', 'window.camera', 'window.renderer', 'window.controls'.
     2. DO NOT create scene/camera/renderer. Use the existing global variables.
     3. You must create meshes/lights and add them to 'window.scene'.
     4. If the user asks for a specific shape, use Three.js geometries or CSG.
     5. If 'imageToUse' is provided, load it as a texture.
-    6. Expose key parameters (like dimensions, colors) to the GUI using: 
+    6. Expose key parameters (like dimensions, colors) to the GUI using:
        'new window.GUI().add(object, "prop", min, max)'.
-    
+
     Return ONLY the code inside the script tag (or just the JS logic if updating).
-    Actually, return full HTML structure but assume the driver script is injected by the host. 
+    Actually, return full HTML structure but assume the driver script is injected by the host.
     However, for simplicity in this system, provide the FULL HTML including your logic in a <script type="module">.
     The host will inject the necessary import maps and driver setup code. You focus on the logic that runs AFTER init.
-    
+
     Use 'window.scene.add(mesh)' to show objects.
     `;
 
-    const response = await backend.ai.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: `User Prompt: ${prompt}.
-        ${existingCode ? `Existing Code (Update this): \n${existingCode}` : ''}
-        ${imageToUse ? 'Has Reference Image: Yes' : ''}`,
-        config: {
-            systemInstruction: systemPrompt,
-            thinkingConfig: { thinkingBudget: 4096 }
-        }
-    });
+    const textContent = `User Prompt: ${prompt}.
+        ${existingCode ? `Existing Code (Update this): \n${existingCode}` : ''}`;
 
-    let text = getText(response);
-    return text.replace(/```html/g, '').replace(/```/g, '');
+    // Debug: Log API call
+    debug.generationAPICall('gemini-3-pro-preview', systemPrompt.length, textContent.length);
+
+    try {
+        // Build content with image if provided
+        let contents: any;
+        if (imageToUse) {
+            // Extract base64 data from data URL
+            const base64Data = imageToUse.split(',')[1];
+            const mimeType = imageToUse.split(';')[0].split(':')[1] || 'image/jpeg';
+
+            contents = {
+                role: 'user',
+                parts: [
+                    {
+                        inlineData: {
+                            mimeType: mimeType,
+                            data: base64Data
+                        }
+                    },
+                    { text: textContent + `
+
+CRITICAL INSTRUCTIONS FOR IMAGE ANALYSIS:
+1. Carefully analyze the provided reference image
+2. Identify the main geometric shapes, proportions, and structural elements
+3. Note the approximate dimensions and scale relationships
+4. Identify key features like windows, doors, roof style, textures
+5. Create a Three.js 3D model that accurately represents the image
+
+Generate a complete, working Three.js scene with:
+- Accurate geometry matching the reference image
+- Proper materials and colors
+- GUI controls for adjusting dimensions
+- Good lighting and shadows` }
+                ]
+            };
+        } else {
+            contents = textContent;
+        }
+
+        const response = await backend.ai.generateContent({
+            model: 'gemini-3-pro-preview',  // Best model for image analysis and 3D generation
+            contents: contents,
+            config: {
+                systemInstruction: systemPrompt,
+                // Gemini 3 uses thinking_level instead of thinkingBudget
+                thinkingConfig: { thinkingLevel: 'high' }
+            }
+        });
+
+        let text = getText(response);
+        const result = text.replace(/```html/g, '').replace(/```/g, '');
+
+        // Debug: Log API response
+        debug.generationAPIResponse(result.length, false);
+
+        return result;
+    } catch (error: any) {
+        debug.generationAPIResponse(0, true);
+        throw error;
+    }
 };

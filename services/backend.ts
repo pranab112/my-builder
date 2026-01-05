@@ -211,12 +211,28 @@ class LocalBackend implements BackendService {
           await waitForRateLimit();
 
           // In MOCK mode, we still access env variable, or fail if missing.
-          const apiKey = process.env.API_KEY;
-          if (!apiKey) throw new Error("API Key missing (Local Mode)");
+          const apiKey = (import.meta as any).env?.VITE_API_KEY;
+          if (!apiKey) throw new Error("API Key missing. Add VITE_API_KEY to .env file.");
 
           const client = new GoogleGenAI({ apiKey });
+
+          // FIXED: Add timeout handling (90 seconds for complex generation with images)
+          const TIMEOUT_MS = 90000;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error('AI request timed out. Please try again.')), TIMEOUT_MS);
+          });
+
           try {
-              const response = await client.models.generateContent(params);
+              const response = await Promise.race([
+                  client.models.generateContent(params),
+                  timeoutPromise
+              ]);
+
+              // Validate response structure
+              if (!response) {
+                  throw new Error('Empty response from AI service.');
+              }
+
               const serializedResponse = {
                   text: response.text,
                   candidates: response.candidates
@@ -224,7 +240,26 @@ class LocalBackend implements BackendService {
               setCachedResponse(cacheKey, serializedResponse);
               return serializedResponse;
           } catch (e: any) {
-              throw new Error(e.message || "AI Service Error");
+              // FIXED: Provide more descriptive error messages
+              const errorMsg = e.message || 'Unknown AI service error';
+
+              if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('rate limit')) {
+                  throw new Error('API rate limit exceeded. Please wait a moment and try again.');
+              }
+              if (errorMsg.includes('401') || errorMsg.includes('403') || errorMsg.toLowerCase().includes('api key')) {
+                  throw new Error('Invalid API key. Please check your VITE_API_KEY in .env file.');
+              }
+              if (errorMsg.includes('500') || errorMsg.includes('503')) {
+                  throw new Error('AI service is temporarily unavailable. Please try again later.');
+              }
+              if (errorMsg.includes('timeout') || errorMsg.includes('timed out')) {
+                  throw new Error('Request timed out. The model is taking too long to respond.');
+              }
+              if (errorMsg.includes('network') || errorMsg.includes('fetch')) {
+                  throw new Error('Network error. Please check your internet connection.');
+              }
+
+              throw new Error(`AI Error: ${errorMsg}`);
           }
       }
   }
@@ -364,6 +399,130 @@ class SupabaseBackendImpl implements BackendService {
   };
 }
 
+// --- IMPLEMENTATION 3: REST API BACKEND (Railway/Production) ---
+
+class APIBackend implements BackendService {
+    private baseUrl: string;
+    private token: string | null = null;
+
+    constructor(baseUrl: string) {
+        this.baseUrl = baseUrl;
+        this.token = localStorage.getItem('proshot_api_token');
+    }
+
+    private async fetch(endpoint: string, options: RequestInit = {}): Promise<any> {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            ...(options.headers as Record<string, string> || {})
+        };
+
+        if (this.token) {
+            headers['Authorization'] = `Bearer ${this.token}`;
+        }
+
+        const response = await fetch(`${this.baseUrl}${endpoint}`, {
+            ...options,
+            headers
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ error: 'Request failed' }));
+            throw new Error(error.error || 'Request failed');
+        }
+
+        return response.json();
+    }
+
+    auth = {
+        login: async (email: string): Promise<User> => {
+            const { user, token } = await this.fetch('/api/auth/login', {
+                method: 'POST',
+                body: JSON.stringify({ email })
+            });
+            this.token = token;
+            localStorage.setItem('proshot_api_token', token);
+            return user;
+        },
+
+        register: async (name: string, email: string): Promise<User> => {
+            const { user, token } = await this.fetch('/api/auth/register', {
+                method: 'POST',
+                body: JSON.stringify({ name, email })
+            });
+            this.token = token;
+            localStorage.setItem('proshot_api_token', token);
+            return user;
+        },
+
+        loginWithProvider: async (provider: 'google' | 'github'): Promise<User> => {
+            // For OAuth, redirect to backend
+            window.location.href = `${this.baseUrl}/api/auth/${provider}`;
+            return { id: '', name: '', email: '' };
+        },
+
+        logout: async (): Promise<void> => {
+            this.token = null;
+            localStorage.removeItem('proshot_api_token');
+        },
+
+        getCurrentUser: async (): Promise<User | null> => {
+            if (!this.token) return null;
+            try {
+                return await this.fetch('/api/auth/me');
+            } catch {
+                this.token = null;
+                localStorage.removeItem('proshot_api_token');
+                return null;
+            }
+        }
+    };
+
+    db = {
+        getProjects: async (userId: string, type?: ProjectType): Promise<Project[]> => {
+            const query = type ? `?type=${type}` : '';
+            return this.fetch(`/api/projects${query}`);
+        },
+
+        getProject: async (id: string): Promise<Project | null> => {
+            try {
+                return await this.fetch(`/api/projects/${id}`);
+            } catch {
+                return null;
+            }
+        },
+
+        saveProject: async (project: Project): Promise<Project> => {
+            return this.fetch('/api/projects', {
+                method: 'POST',
+                body: JSON.stringify(project)
+            });
+        },
+
+        deleteProject: async (id: string): Promise<void> => {
+            await this.fetch(`/api/projects/${id}`, { method: 'DELETE' });
+        }
+    };
+
+    ai = {
+        generateContent: async (params: any): Promise<any> => {
+            // Check cache FIRST
+            const cacheKey = getCacheKey(params);
+            const cached = getCachedResponse(cacheKey);
+            if (cached) return cached;
+
+            await waitForRateLimit();
+
+            const response = await this.fetch('/api/ai/generate', {
+                method: 'POST',
+                body: JSON.stringify(params)
+            });
+
+            setCachedResponse(cacheKey, response);
+            return response;
+        }
+    };
+}
+
 // --- FACTORY ---
 
 function createBackend(): BackendService {
@@ -374,13 +533,20 @@ function createBackend(): BackendService {
         }
     } catch (e) { }
 
+    // Priority: API Backend > Supabase > Local
+    const apiUrl = metaEnv.VITE_API_URL;
     const useSupabase = metaEnv.VITE_USE_SUPABASE === 'true';
     const supabaseUrl = metaEnv.VITE_SUPABASE_URL;
     const supabaseKey = metaEnv.VITE_SUPABASE_ANON_KEY;
 
-    if (useSupabase && supabaseUrl && supabaseKey) {
+    if (apiUrl) {
+        console.log('[Backend] Using API backend:', apiUrl);
+        return new APIBackend(apiUrl);
+    } else if (useSupabase && supabaseUrl && supabaseKey) {
+        console.log('[Backend] Using Supabase backend');
         return new SupabaseBackendImpl(supabaseUrl, supabaseKey);
     } else {
+        console.log('[Backend] Using Local backend (localStorage)');
         return new LocalBackend();
     }
 }

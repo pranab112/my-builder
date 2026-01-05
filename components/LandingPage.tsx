@@ -340,9 +340,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
                           <div className="text-slate-500 my-2">// Analyzing topology constraints...</div>
                           <div className="text-emerald-400 animate-pulse">await ai.optimize(geometry, '3d-printable');</div>
                           <div className="mt-4 p-4 bg-slate-900 rounded border border-slate-800 text-slate-400 text-xs">
-                              > Mesh verified: Manifold<br/>
-                              > Vertex count: 12,405<br/>
-                              > Export ready: GLTF, STL
+                              {'>'} Mesh verified: Manifold<br/>
+                              {'>'} Vertex count: 12,405<br/>
+                              {'>'} Export ready: GLTF, STL
                           </div>
                       </div>
                   </div>

@@ -54,7 +54,26 @@ export const useGlobalStore = create<GlobalState>((set, get) => ({
 
   initAuth: async () => {
     try {
-      const user = await backend.auth.getCurrentUser();
+      let user = await backend.auth.getCurrentUser();
+
+      // Auto-create guest user if not authenticated (for API backend)
+      if (!user) {
+        const guestId = localStorage.getItem('proshot_guest_id') || crypto.randomUUID();
+        localStorage.setItem('proshot_guest_id', guestId);
+
+        try {
+          // Try to login with guest email first
+          user = await backend.auth.login(`guest_${guestId}@proshot.local`);
+        } catch (loginErr) {
+          // If login fails, register new guest
+          try {
+            user = await backend.auth.register(`Guest User`, `guest_${guestId}@proshot.local`);
+          } catch (regErr) {
+            console.log('Guest auto-registration failed, using local mode');
+          }
+        }
+      }
+
       set({ user, isAuthLoading: false });
       if (user) {
           get().loadProjects();

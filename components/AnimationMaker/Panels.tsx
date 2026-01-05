@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useBuilderStore } from '../../stores/builderStore';
 import { PrinterPreset, WorkspaceMode, ParameterControl } from './types';
 import { calculateFilamentCost } from '../../services/geometryCalculator';
+import { debug } from '../../services/debugService';
 
 interface PanelsProps {
   handleToolClick: (prompt: string) => void;
@@ -60,9 +61,11 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
 
   const handleBooleanClick = (op: 'union' | 'subtract' | 'intersect') => {
       if (store.selectedObjectIds.length > 0) {
+          debug.panelBooleanStarted(op, store.selectedObjectIds[0]);
           store.setBooleanOp(op);
           store.setBooleanTarget(store.selectedObjectIds[0]);
       } else {
+          debug.runtimeError("Boolean operation failed: No target selected", "Panels");
           alert("Select a Target object first.");
       }
   };
@@ -144,6 +147,7 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
   };
   
   const handleExtrude = () => {
+      debug.panelSketchExtruded(sketchPoints.length, extrudeHeight);
       if(handleSketchExtrude) handleSketchExtrude(sketchPoints, extrudeHeight);
       setSketchPoints([]);
   };
@@ -232,12 +236,14 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
       if (store.booleanOp && store.booleanTarget && store.selectedObjectIds.length > 0) {
           const toolId = store.selectedObjectIds[0];
           if (toolId !== store.booleanTarget) {
-              window.postMessage({ 
-                  type: 'performBoolean', 
-                  op: store.booleanOp, 
-                  targetId: store.booleanTarget, 
-                  toolId: toolId 
+              debug.messageToIframe('performBoolean', { op: store.booleanOp, targetId: store.booleanTarget, toolId });
+              window.postMessage({
+                  type: 'performBoolean',
+                  op: store.booleanOp,
+                  targetId: store.booleanTarget,
+                  toolId: toolId
               }, '*');
+              debug.panelBooleanCompleted(store.booleanOp, true);
               store.setBooleanOp(null);
               store.setBooleanTarget(null);
           }

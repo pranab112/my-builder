@@ -13,6 +13,8 @@ import { BuilderHeader } from './Builder/Header';
 import { BuilderInputPanel } from './Builder/InputPanel';
 import { BuilderViewport } from './Builder/Viewport';
 import { BuilderStatusBar } from './Builder/StatusBar';
+import { debug } from '../../services/debugService';
+import { DebugPanel } from './DebugPanel';
 
 interface BuilderProps {
   project: SavedProject;
@@ -67,13 +69,24 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (!event.data) return;
-      if (event.data.type === 'error') store.setRuntimeError(event.data.message);
+
+      // Debug: Log all messages from iframe
+      debug.messageFromIframe(event.data.type, event.data);
+
+      if (event.data.type === 'error') {
+        debug.runtimeError(event.data.message, 'Iframe');
+        store.setRuntimeError(event.data.message);
+      }
       if (event.data.type === 'geometryStats') store.setSpecs(event.data.stats);
-      if (event.data.type === 'exportComplete') alert("Export started! Check your downloads.");
+      if (event.data.type === 'exportComplete') {
+        debug.exportCompleted('unknown');
+        alert("Export started! Check your downloads.");
+      }
       if (event.data.type === 'sceneGraphUpdate') {
           store.setSceneGraph(event.data.graph);
           const selected = event.data.graph.filter((n: any) => n.selected).map((n: any) => n.id);
           store.setSelectedObjectIds(selected);
+          debug.sceneGraphUpdated(event.data.graph.length, selected.length);
       }
       if (event.data.type === 'cameraState') {
           const { position, target } = event.data;
@@ -86,27 +99,53 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       }
       if (event.data.type === 'guiConfig') {
           store.setParameters(event.data.controls);
+          debug.guiConfigReceived(event.data.controls.length);
+      }
+      if (event.data.type === 'sceneReady') {
+          debug.renderSceneDetected(true, true, true);
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
-  // --- AUTO-DEBUG LOGIC ---
+  // --- AUTO-DEBUG LOGIC (with debounce) ---
+  const autoDebugTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
-      // If we have an error, auto-debug is ON, and we aren't already fixing...
-      if (store.runtimeError && store.autoDebug && !store.isFixing) {
-          if (fixAttemptsRef.current < 3) {
-              console.log(`🤖 [Auto-Debug] Triggering fix attempt ${fixAttemptsRef.current + 1}/3`);
-              fixAttemptsRef.current += 1;
-              handleAutoFix();
-          } else {
-              store.setError("Auto-debug paused: Too many consecutive errors. Please review the code manually.");
-              store.toggleAutoDebug(); // Turn off safety to prevent infinite loop
-              fixAttemptsRef.current = 0; // Reset for next time user engages
-          }
+      // Clear any pending auto-debug timer
+      if (autoDebugTimerRef.current) {
+          clearTimeout(autoDebugTimerRef.current);
+          autoDebugTimerRef.current = null;
       }
-  }, [store.runtimeError, store.autoDebug]);
+
+      // Guard: Skip if already fixing to prevent race condition
+      if (store.isFixing) return;
+
+      // If we have an error and auto-debug is ON
+      if (store.runtimeError && store.autoDebug) {
+          // DEBOUNCE: Wait 1.5 seconds before triggering auto-fix
+          // This prevents rapid retries and allows iframe to settle
+          autoDebugTimerRef.current = setTimeout(() => {
+              if (fixAttemptsRef.current < 3) {
+                  console.log(`🤖 [Auto-Debug] Triggering fix attempt ${fixAttemptsRef.current + 1}/3`);
+                  fixAttemptsRef.current += 1;
+                  void handleAutoFix();
+              } else {
+                  store.setError("Auto-debug paused: Too many consecutive errors. Please review the code manually.");
+                  store.toggleAutoDebug(); // Turn off safety to prevent infinite loop
+                  fixAttemptsRef.current = 0; // Reset for next time user engages
+              }
+          }, 1500);
+      }
+
+      // Cleanup timer on unmount or deps change
+      return () => {
+          if (autoDebugTimerRef.current) {
+              clearTimeout(autoDebugTimerRef.current);
+          }
+      };
+  }, [store.runtimeError, store.autoDebug, store.isFixing]);
 
   // Sync Store State to Iframe
   useEffect(() => {
@@ -182,6 +221,15 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
   // --- ACTIONS ---
   const handleGenerate = async () => {
+    // Debug: Start generation tracking
+    debug.generationStarted({
+      prompt: store.prompt,
+      hasExistingCode: !!store.htmlCode,
+      hasImage: store.refImages.length > 0,
+      category: project.category,
+      mode: workspaceMode
+    });
+
     store.setGenerating(true);
     store.setError(null);
     store.setRuntimeError(null);
@@ -195,13 +243,17 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       }
       const code = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imageToUse, project.category, workspaceMode);
       if (!code || code.length < 50) throw new Error("Generated code seems invalid.");
-      
+
+      // Debug: Generation completed
+      debug.generationCompleted(code.length);
+
       // Pass the prompt to history
       store.setHtmlCode(code, true, store.prompt || "Generated Model");
-      
-      store.setPrompt(''); 
+
+      store.setPrompt('');
       store.setRefImages([]);
     } catch (err: any) {
+      debug.generationFailed(err.message || "Unknown error");
       store.setError(err.message || "Failed to generate.");
     } finally {
       store.setGenerating(false);
@@ -210,21 +262,29 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
   const handleAutoFix = async () => {
       if (!store.htmlCode || !store.runtimeError) return;
+
+      // Debug: Start auto-fix tracking
+      debug.autoFixStarted(store.runtimeError, fixAttemptsRef.current);
+
       store.setFixing(true);
       try {
           const fixed = await fixThreeJSCode(store.htmlCode, store.runtimeError);
-          // When auto-fixing, we update the code. 
+          // When auto-fixing, we update the code.
           // Note: The 'useEffect' for htmlCode will clear runtimeError eventually if iframe loads successfully.
           // But here we must be careful not to loop. The loop is guarded by fixAttemptsRef.
           store.setHtmlCode(fixed, true, `Auto-Fix: ${store.runtimeError.substring(0, 30)}...`);
-          
-          // DO NOT clear runtimeError here immediately. 
-          // Let the iframe reload; if it succeeds, it wont send an error, and store.runtimeError is cleared by user or new success? 
+
+          // Debug: Auto-fix completed
+          debug.autoFixCompleted(true, fixed.length);
+
+          // DO NOT clear runtimeError here immediately.
+          // Let the iframe reload; if it succeeds, it wont send an error, and store.runtimeError is cleared by user or new success?
           // Actually we rely on the iframe NOT sending an error.
           // But we should probably clear the old error so the effect doesn't re-fire instantly on same error string.
-          store.setRuntimeError(null); 
-          
+          store.setRuntimeError(null);
+
       } catch (e) {
+          debug.autoFixCompleted(false);
           store.setError("Failed to auto-fix.");
       } finally {
           store.setFixing(false);
@@ -261,12 +321,26 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    // CRITICAL: Revoke blob URL to prevent memory leak
+    URL.revokeObjectURL(url);
   };
 
   const injectContextAndDriver = (html: string) => {
       let modified = injectDriverScript(html);
       if (project.importedData) {
-          const injection = `<script>window.IMPORTED_MODEL_URL = "${project.importedData}"; window.IMPORTED_MODEL_TYPE = "${project.importedType || 'stl'}";</script>`;
+          // SECURITY: Escape user data to prevent XSS injection
+          const escapeForJS = (str: string) =>
+              str.replace(/\\/g, '\\\\')
+                 .replace(/"/g, '\\"')
+                 .replace(/'/g, "\\'")
+                 .replace(/</g, '\\x3c')
+                 .replace(/>/g, '\\x3e')
+                 .replace(/\n/g, '\\n')
+                 .replace(/\r/g, '\\r');
+
+          const safeUrl = escapeForJS(project.importedData);
+          const safeType = escapeForJS(project.importedType || 'stl');
+          const injection = `<script>window.IMPORTED_MODEL_URL = "${safeUrl}"; window.IMPORTED_MODEL_TYPE = "${safeType}";</script>`;
           modified = modified.replace('<head>', '<head>' + injection);
       }
       return modified;
@@ -293,6 +367,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     <>
       {store.isCommandPaletteOpen && <CommandPalette onClose={() => store.setCommandPaletteOpen(false)} onViewChange={sendViewCommand} onExport={handleExport} />}
       {store.isHelpOpen && <HelpModal onClose={() => store.setHelpOpen(false)} />}
+      <DebugPanel />
 
       <div className={`h-full transition-all duration-300 ${store.isFullScreen ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col' : 'grid grid-cols-1 lg:grid-cols-12 gap-8'}`}>
         <div className={`flex flex-col space-y-6 overflow-y-auto max-h-[calc(100vh-140px)] custom-scrollbar pr-2 transition-all duration-300 ${store.isFullScreen ? 'hidden' : 'lg:col-span-4'}`}>
