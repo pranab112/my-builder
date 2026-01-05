@@ -31,99 +31,309 @@ const getJSON = (text: string): any => {
     }
 };
 
-// AI Output Validation and Cleaning
+// ═══════════════════════════════════════════════════════════════════════════════
+// AI OUTPUT VALIDATION AND SECURITY
+// Comprehensive validation for AI-generated Three.js code
+// ═══════════════════════════════════════════════════════════════════════════════
+
 interface ValidationResult {
     isValid: boolean;
     cleanedCode: string;
     warnings: string[];
     errors: string[];
+    stats: {
+        originalLength: number;
+        cleanedLength: number;
+        linesOfCode: number;
+        complexity: 'low' | 'medium' | 'high';
+    };
 }
+
+// Security patterns that are dangerous or not allowed
+const SECURITY_PATTERNS = [
+    // Code execution
+    { pattern: /\beval\s*\(/gi, message: 'eval() is blocked - potential code injection', severity: 'error' as const },
+    { pattern: /\bnew\s+Function\s*\(/gi, message: 'new Function() is blocked - potential code injection', severity: 'error' as const },
+    { pattern: /\bsetTimeout\s*\(\s*['"`]/gi, message: 'setTimeout with string is blocked', severity: 'error' as const },
+    { pattern: /\bsetInterval\s*\(\s*['"`]/gi, message: 'setInterval with string is blocked', severity: 'error' as const },
+
+    // DOM manipulation
+    { pattern: /\bdocument\.write\s*\(/gi, message: 'document.write() is blocked', severity: 'error' as const },
+    { pattern: /\.innerHTML\s*=/gi, message: 'innerHTML assignment is risky - use textContent', severity: 'warning' as const },
+    { pattern: /\.outerHTML\s*=/gi, message: 'outerHTML assignment is blocked', severity: 'error' as const },
+    { pattern: /document\.createElement\s*\(\s*['"`]script/gi, message: 'Dynamic script creation is blocked', severity: 'error' as const },
+
+    // Network requests
+    { pattern: /fetch\s*\(\s*['"`]http/gi, message: 'External HTTP requests are blocked', severity: 'error' as const },
+    { pattern: /\bXMLHttpRequest\b/gi, message: 'XMLHttpRequest is blocked', severity: 'error' as const },
+    { pattern: /\bWebSocket\s*\(/gi, message: 'WebSocket connections are blocked', severity: 'error' as const },
+    { pattern: /\bimportScripts\s*\(/gi, message: 'importScripts is blocked', severity: 'error' as const },
+
+    // Storage/cookies
+    { pattern: /\blocalStorage\b/gi, message: 'localStorage access is blocked', severity: 'warning' as const },
+    { pattern: /\bsessionStorage\b/gi, message: 'sessionStorage access is blocked', severity: 'warning' as const },
+    { pattern: /\bdocument\.cookie\b/gi, message: 'Cookie access is blocked', severity: 'error' as const },
+
+    // Window manipulation
+    { pattern: /\bwindow\.open\s*\(/gi, message: 'window.open() is blocked', severity: 'error' as const },
+    { pattern: /\bwindow\.location\s*=/gi, message: 'Redirect attempts are blocked', severity: 'error' as const },
+    { pattern: /\blocation\.href\s*=/gi, message: 'Redirect attempts are blocked', severity: 'error' as const },
+    { pattern: /\bhistory\.(pushState|replaceState)\s*\(/gi, message: 'History manipulation is blocked', severity: 'warning' as const },
+];
+
+// Patterns that indicate potential infinite loops or resource bombs
+const RESOURCE_PATTERNS = [
+    { pattern: /while\s*\(\s*true\s*\)/gi, message: 'Infinite while(true) loop detected', severity: 'error' as const },
+    { pattern: /while\s*\(\s*1\s*\)/gi, message: 'Infinite while(1) loop detected', severity: 'error' as const },
+    { pattern: /for\s*\(\s*;\s*;\s*\)/gi, message: 'Infinite for(;;) loop detected', severity: 'error' as const },
+    { pattern: /for\s*\(\s*;;\s*\)/gi, message: 'Infinite for loop detected', severity: 'error' as const },
+    { pattern: /new\s+Array\s*\(\s*\d{7,}\s*\)/gi, message: 'Large array allocation detected (potential memory bomb)', severity: 'error' as const },
+    { pattern: /\.fill\s*\([^)]*\)\s*\.map/gi, message: 'Potentially expensive array operation', severity: 'warning' as const },
+    { pattern: /requestAnimationFrame\s*\([^)]*requestAnimationFrame/gi, message: 'Nested requestAnimationFrame detected', severity: 'warning' as const },
+];
+
+// Three.js deprecated or problematic APIs
+const THREEJS_PATTERNS = [
+    // Deprecated APIs (Three.js r150+)
+    { pattern: /\.computeFaceNormals\s*\(/gi, message: 'computeFaceNormals() is deprecated - use computeVertexNormals()', severity: 'warning' as const },
+    { pattern: /THREE\.Geometry\b/gi, message: 'THREE.Geometry is deprecated - use THREE.BufferGeometry', severity: 'warning' as const },
+    { pattern: /THREE\.Face3\b/gi, message: 'THREE.Face3 is deprecated', severity: 'warning' as const },
+    { pattern: /\.computeCentroids\s*\(/gi, message: 'computeCentroids() is deprecated', severity: 'warning' as const },
+    { pattern: /THREE\.ImageUtils\b/gi, message: 'THREE.ImageUtils is deprecated - use THREE.TextureLoader', severity: 'warning' as const },
+    { pattern: /THREE\.FontLoader\b/gi, message: 'FontLoader moved to examples/jsm/loaders/', severity: 'info' as const },
+
+    // Performance warnings
+    { pattern: /new\s+THREE\.\w+Geometry\s*\([^)]*,\s*\d{3,}\s*,/gi, message: 'High segment count may impact performance', severity: 'warning' as const },
+    { pattern: /\.clone\s*\(\s*\)\s*\.clone\s*\(/gi, message: 'Multiple clone() calls - consider refactoring', severity: 'warning' as const },
+
+    // Common mistakes
+    { pattern: /scene\.add\s*\(\s*geometry\s*\)/gi, message: 'Adding geometry directly - use Mesh(geometry, material)', severity: 'error' as const },
+    { pattern: /new\s+THREE\.MeshBasicMaterial\s*\(\s*\)/gi, message: 'MeshBasicMaterial with no options - object will be black', severity: 'warning' as const },
+];
+
+// Environment-specific patterns (things our driver handles)
+const ENVIRONMENT_PATTERNS = [
+    { pattern: /^\s*import\s+/m, message: 'Import statements are handled by environment', shouldRemove: true },
+    { pattern: /^\s*export\s+/m, message: 'Export statements are not needed', shouldRemove: true },
+    { pattern: /new\s+THREE\.Scene\s*\(/gi, message: 'Scene is provided - use window.scene', shouldReplace: true },
+    { pattern: /new\s+THREE\.WebGLRenderer\s*\(/gi, message: 'Renderer is provided - use window.renderer', shouldReplace: true },
+    { pattern: /new\s+THREE\.PerspectiveCamera\s*\(/gi, message: 'Camera is provided - use window.camera', shouldReplace: true },
+    { pattern: /new\s+OrbitControls\s*\(/gi, message: 'Controls are provided - use window.controls', shouldReplace: true },
+];
 
 const validateAndCleanCode = (code: string): ValidationResult => {
     const warnings: string[] = [];
     const errors: string[] = [];
+    const originalLength = code.length;
 
-    // Step 1: Clean markdown artifacts
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 1: Clean markdown artifacts
+    // ═══════════════════════════════════════════════════════════════════════════
     let cleaned = code
         .replace(/```javascript\n?/gi, '')
+        .replace(/```typescript\n?/gi, '')
         .replace(/```js\n?/gi, '')
+        .replace(/```ts\n?/gi, '')
         .replace(/```html\n?/gi, '')
         .replace(/```\n?/g, '')
         .trim();
 
-    // Step 2: Check for dangerous patterns
-    const dangerousPatterns = [
-        { pattern: /\beval\s*\(/gi, message: 'eval() is not allowed' },
-        { pattern: /\bnew\s+Function\s*\(/gi, message: 'new Function() is not allowed' },
-        { pattern: /\bdocument\.write\s*\(/gi, message: 'document.write() is not allowed' },
-        { pattern: /fetch\s*\(\s*['"`]http/gi, message: 'External fetch requests are not allowed' },
-        { pattern: /XMLHttpRequest/gi, message: 'XMLHttpRequest is not allowed' },
-        { pattern: /\.innerHTML\s*=/gi, message: 'innerHTML assignment is discouraged' },
-    ];
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 2: Extract JS from HTML if AI ignored instructions
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (cleaned.includes('<!DOCTYPE') || cleaned.includes('<html') || cleaned.includes('<head')) {
+        warnings.push('AI returned HTML structure when pure JS was expected - extracting JS code');
 
-    for (const { pattern, message } of dangerousPatterns) {
-        if (pattern.test(cleaned)) {
-            warnings.push(message);
-        }
-    }
-
-    // Step 3: Check for HTML artifacts that shouldn't be there
-    if (cleaned.includes('<!DOCTYPE') || cleaned.includes('<html')) {
-        warnings.push('AI returned HTML structure when pure JS was expected. Attempting to extract JS code.');
-
-        // Try to extract JS from script tags
-        const scriptMatch = cleaned.match(/<script[^>]*>([\s\S]*?)<\/script>/gi);
-        if (scriptMatch) {
-            // Extract content from script tags
-            const jsCode = scriptMatch
+        const scriptMatches = cleaned.match(/<script[^>]*>([\s\S]*?)<\/script>/gi);
+        if (scriptMatches && scriptMatches.length > 0) {
+            const jsCode = scriptMatches
                 .map(s => s.replace(/<script[^>]*>/gi, '').replace(/<\/script>/gi, ''))
-                .join('\n');
-            cleaned = jsCode.trim();
+                .filter(s => s.trim().length > 0)
+                .join('\n\n');
+            if (jsCode.trim().length > 0) {
+                cleaned = jsCode.trim();
+            }
+        }
+
+        // Remove any remaining HTML tags
+        cleaned = cleaned
+            .replace(/<\/?html[^>]*>/gi, '')
+            .replace(/<\/?head[^>]*>/gi, '')
+            .replace(/<\/?body[^>]*>/gi, '')
+            .replace(/<\/?style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<!DOCTYPE[^>]*>/gi, '')
+            .trim();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 3: Security validation
+    // ═══════════════════════════════════════════════════════════════════════════
+    for (const { pattern, message, severity } of SECURITY_PATTERNS) {
+        // Reset regex lastIndex for global patterns
+        pattern.lastIndex = 0;
+        if (pattern.test(cleaned)) {
+            if (severity === 'error') {
+                errors.push(`🔒 SECURITY: ${message}`);
+            } else {
+                warnings.push(`⚠️ Security: ${message}`);
+            }
         }
     }
 
-    // Step 4: Check for import statements (not allowed in our environment)
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 4: Resource/Performance validation
+    // ═══════════════════════════════════════════════════════════════════════════
+    for (const { pattern, message, severity } of RESOURCE_PATTERNS) {
+        pattern.lastIndex = 0;
+        if (pattern.test(cleaned)) {
+            if (severity === 'error') {
+                errors.push(`💥 RESOURCE: ${message}`);
+                // Try to fix infinite loops by adding break condition
+                cleaned = cleaned.replace(/while\s*\(\s*true\s*\)/gi, 'while(false /* BLOCKED: infinite loop */)');
+                cleaned = cleaned.replace(/while\s*\(\s*1\s*\)/gi, 'while(false /* BLOCKED: infinite loop */)');
+                cleaned = cleaned.replace(/for\s*\(\s*;\s*;\s*\)/gi, 'for(;false;) /* BLOCKED: infinite loop */');
+            } else {
+                warnings.push(`⚡ Performance: ${message}`);
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 5: Three.js API validation
+    // ═══════════════════════════════════════════════════════════════════════════
+    for (const { pattern, message, severity } of THREEJS_PATTERNS) {
+        pattern.lastIndex = 0;
+        if (pattern.test(cleaned)) {
+            if (severity === 'error') {
+                errors.push(`🎨 Three.js: ${message}`);
+            } else if (severity === 'warning') {
+                warnings.push(`🎨 Three.js: ${message}`);
+            }
+            // Info level is logged but not added to warnings
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 6: Environment compatibility - Fix common issues
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Remove import statements
     if (/^\s*import\s+/m.test(cleaned)) {
-        warnings.push('Import statements detected - these are handled by the environment. Removing them.');
-        cleaned = cleaned.replace(/^\s*import\s+.*?[;\n]/gm, '// [REMOVED IMPORT]\n');
+        warnings.push('📦 Removed import statements (handled by environment)');
+        cleaned = cleaned.replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*\n?/gm, '');
+        cleaned = cleaned.replace(/^\s*import\s+['"][^'"]+['"]\s*;?\s*\n?/gm, '');
     }
 
-    // Step 5: Check for scene/camera/renderer creation (not allowed)
-    if (/new\s+THREE\.Scene\s*\(/gi.test(cleaned)) {
-        warnings.push('Scene creation detected - using existing window.scene instead.');
-        cleaned = cleaned.replace(/const\s+scene\s*=\s*new\s+THREE\.Scene\s*\([^)]*\)\s*;?/gi, '// Using window.scene instead');
-        cleaned = cleaned.replace(/let\s+scene\s*=\s*new\s+THREE\.Scene\s*\([^)]*\)\s*;?/gi, '// Using window.scene instead');
-        cleaned = cleaned.replace(/var\s+scene\s*=\s*new\s+THREE\.Scene\s*\([^)]*\)\s*;?/gi, '// Using window.scene instead');
+    // Remove export statements
+    if (/^\s*export\s+/m.test(cleaned)) {
+        warnings.push('📦 Removed export statements (not needed)');
+        cleaned = cleaned.replace(/^\s*export\s+(default\s+)?/gm, '');
     }
 
-    if (/new\s+THREE\.(WebGLRenderer|PerspectiveCamera)\s*\(/gi.test(cleaned)) {
-        warnings.push('Renderer/Camera creation detected - using existing window.renderer/camera instead.');
+    // Fix scene/camera/renderer references
+    const sceneCreationPattern = /(const|let|var)\s+(scene)\s*=\s*new\s+THREE\.Scene\s*\([^)]*\)\s*;?/gi;
+    if (sceneCreationPattern.test(cleaned)) {
+        warnings.push('🔧 Replaced scene creation with window.scene reference');
+        cleaned = cleaned.replace(sceneCreationPattern, 'const scene = window.scene; // Using existing scene');
     }
 
-    // Step 6: Replace bare 'scene.' with 'window.scene.'
-    cleaned = cleaned.replace(/(?<!window\.)scene\.add\(/g, 'window.scene.add(');
+    const rendererCreationPattern = /(const|let|var)\s+(renderer)\s*=\s*new\s+THREE\.WebGLRenderer\s*\([^)]*\)\s*;?/gi;
+    if (rendererCreationPattern.test(cleaned)) {
+        warnings.push('🔧 Replaced renderer creation with window.renderer reference');
+        cleaned = cleaned.replace(rendererCreationPattern, 'const renderer = window.renderer; // Using existing renderer');
+    }
 
-    // Step 7: Basic syntax check (try to parse as a function body)
+    const cameraCreationPattern = /(const|let|var)\s+(camera)\s*=\s*new\s+THREE\.PerspectiveCamera\s*\([^)]*\)\s*;?/gi;
+    if (cameraCreationPattern.test(cleaned)) {
+        warnings.push('🔧 Replaced camera creation with window.camera reference');
+        cleaned = cleaned.replace(cameraCreationPattern, 'const camera = window.camera; // Using existing camera');
+    }
+
+    // Fix bare scene.add() calls (not window.scene.add())
+    // Use negative lookbehind to avoid matching window.scene.add
+    cleaned = cleaned.replace(/(?<!window\.)(?<!this\.)scene\.add\s*\(/g, 'window.scene.add(');
+    cleaned = cleaned.replace(/(?<!window\.)(?<!this\.)scene\.remove\s*\(/g, 'window.scene.remove(');
+
+    // Fix render loop removal (we have our own)
+    cleaned = cleaned.replace(/function\s+animate\s*\(\s*\)\s*\{[\s\S]*?requestAnimationFrame\s*\(\s*animate\s*\)[\s\S]*?\}/gi,
+        '// [REMOVED] Render loop - using environment render loop');
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 7: Code structure validation
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Check for balanced braces
+    const openBraces = (cleaned.match(/\{/g) || []).length;
+    const closeBraces = (cleaned.match(/\}/g) || []).length;
+    if (openBraces !== closeBraces) {
+        warnings.push(`⚠️ Unbalanced braces: ${openBraces} open, ${closeBraces} close`);
+    }
+
+    // Check for balanced parentheses
+    const openParens = (cleaned.match(/\(/g) || []).length;
+    const closeParens = (cleaned.match(/\)/g) || []).length;
+    if (openParens !== closeParens) {
+        warnings.push(`⚠️ Unbalanced parentheses: ${openParens} open, ${closeParens} close`);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 8: Syntax validation
+    // ═══════════════════════════════════════════════════════════════════════════
     try {
-        // Wrap in function to check if it's valid JS
+        // Try to parse as a function body
         new Function(cleaned);
     } catch (e: any) {
-        errors.push(`Syntax error in generated code: ${e.message}`);
+        const errorMsg = e.message || 'Unknown syntax error';
+        errors.push(`❌ Syntax Error: ${errorMsg}`);
+
+        // Try to provide more helpful error info
+        const lineMatch = errorMsg.match(/line\s*(\d+)/i);
+        if (lineMatch) {
+            const lineNum = parseInt(lineMatch[1], 10);
+            const lines = cleaned.split('\n');
+            if (lineNum > 0 && lineNum <= lines.length) {
+                errors.push(`   Line ${lineNum}: ${lines[lineNum - 1].trim().substring(0, 50)}...`);
+            }
+        }
     }
 
-    // Log warnings/errors
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 9: Calculate stats
+    // ═══════════════════════════════════════════════════════════════════════════
+    const linesOfCode = cleaned.split('\n').filter(l => l.trim().length > 0).length;
+    let complexity: 'low' | 'medium' | 'high' = 'low';
+
+    // Simple complexity heuristic
+    const nestedLoops = (cleaned.match(/for\s*\([^)]*\)\s*\{[^}]*for\s*\(/g) || []).length;
+    const callbacks = (cleaned.match(/=>\s*\{/g) || []).length;
+    const conditionals = (cleaned.match(/if\s*\(/g) || []).length;
+
+    const complexityScore = nestedLoops * 3 + callbacks + conditionals;
+    if (complexityScore > 10) complexity = 'high';
+    else if (complexityScore > 5) complexity = 'medium';
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LOGGING
+    // ═══════════════════════════════════════════════════════════════════════════
     if (warnings.length > 0) {
-        console.warn('[AI Validation Warnings]', warnings);
+        console.warn('[AI Validation] Warnings:', warnings);
     }
     if (errors.length > 0) {
-        console.error('[AI Validation Errors]', errors);
+        console.error('[AI Validation] Errors:', errors);
     }
+    console.log(`[AI Validation] Stats: ${linesOfCode} lines, complexity: ${complexity}`);
 
     return {
         isValid: errors.length === 0,
         cleanedCode: cleaned,
         warnings,
-        errors
+        errors,
+        stats: {
+            originalLength,
+            cleanedLength: cleaned.length,
+            linesOfCode,
+            complexity
+        }
     };
 };
 

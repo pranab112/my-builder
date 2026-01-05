@@ -879,22 +879,103 @@ export const injectDriverScript = (html: string) => {
         // Pure JS code - wrap in a script that runs AFTER driver initializes
         console.log('[Driver Inject] Detected pure JS code, wrapping with delayed execution');
 
-        // The user code runs after driver is ready
-        // We use a flag to ensure code only runs once
+        // The user code runs after driver is ready with timeout protection
         const userCodeScript = `
         <script type="module">
-            // User-generated code - runs after driver initializes
-            let _userCodeExecuted = false;
+            // ═══════════════════════════════════════════════════════════════════════
+            // USER CODE EXECUTOR WITH SAFETY FEATURES
+            // ═══════════════════════════════════════════════════════════════════════
 
-            function executeUserCode() {
+            let _userCodeExecuted = false;
+            let _executionStartTime = 0;
+            const EXECUTION_TIMEOUT = 10000; // 10 second timeout for sync code
+            const OBJECT_LIMIT = 1000; // Max objects to add to scene
+
+            // Track objects added to detect potential bombs
+            let _objectsAdded = 0;
+            const _originalSceneAdd = window.scene.add.bind(window.scene);
+            window.scene.add = function(obj) {
+                _objectsAdded++;
+                if (_objectsAdded > OBJECT_LIMIT) {
+                    console.error('[Safety] Object limit exceeded (' + OBJECT_LIMIT + '). Blocking further additions.');
+                    window.parent.postMessage({
+                        type: 'error',
+                        message: 'Object limit exceeded. Code may be creating too many objects.'
+                    }, '*');
+                    return;
+                }
+                return _originalSceneAdd(obj);
+            };
+
+            // Execution timeout checker
+            function checkTimeout() {
+                if (_executionStartTime > 0) {
+                    const elapsed = Date.now() - _executionStartTime;
+                    if (elapsed > EXECUTION_TIMEOUT) {
+                        console.error('[Safety] Execution timeout after ' + elapsed + 'ms');
+                        window.parent.postMessage({
+                            type: 'error',
+                            message: 'Code execution timeout. Code may have an infinite loop.'
+                        }, '*');
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            async function executeUserCode() {
                 if (_userCodeExecuted) return;
                 _userCodeExecuted = true;
+                _executionStartTime = Date.now();
+
                 console.log('[ProShot] Executing user code...');
+
+                // Set up periodic timeout check for long-running sync code
+                const timeoutChecker = setInterval(() => {
+                    if (checkTimeout()) {
+                        clearInterval(timeoutChecker);
+                    }
+                }, 1000);
+
                 try {
+                    // Execute user code
                     ${clean}
+
+                    // Clear timeout checker on success
+                    clearInterval(timeoutChecker);
+
+                    const elapsed = Date.now() - _executionStartTime;
+                    console.log('[ProShot] User code executed successfully in ' + elapsed + 'ms');
+                    console.log('[ProShot] Objects added to scene: ' + _objectsAdded);
+
+                    // Report success to parent
+                    window.parent.postMessage({
+                        type: 'codeExecuted',
+                        success: true,
+                        stats: {
+                            executionTime: elapsed,
+                            objectsAdded: _objectsAdded
+                        }
+                    }, '*');
+
                 } catch(err) {
+                    clearInterval(timeoutChecker);
+                    const elapsed = Date.now() - _executionStartTime;
+
                     console.error('[User Code Error]', err);
-                    window.parent.postMessage({ type: 'error', message: err.message }, '*');
+                    console.error('[Error Details]', {
+                        message: err.message,
+                        stack: err.stack,
+                        executionTime: elapsed
+                    });
+
+                    // Send detailed error to parent
+                    window.parent.postMessage({
+                        type: 'error',
+                        message: err.message,
+                        stack: err.stack,
+                        executionTime: elapsed
+                    }, '*');
                 }
             }
 
