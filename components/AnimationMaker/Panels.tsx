@@ -167,7 +167,7 @@ const MaterialTexturePanel: React.FC<MaterialTexturePanelProps> = ({ store, exec
                         <div className="space-y-1">
                             <label className="text-xs text-slate-300 flex justify-between">
                                 <span>Metalness</span>
-                                <span className="font-mono text-[10px]">{store.materialConfig.metalness.toFixed(2)}</span>
+                                <span className="font-mono text-[10px]">{(store.materialConfig.metalness ?? 0).toFixed(2)}</span>
                             </label>
                             <input
                                 type="range"
@@ -184,7 +184,7 @@ const MaterialTexturePanel: React.FC<MaterialTexturePanelProps> = ({ store, exec
                         <div className="space-y-1">
                             <label className="text-xs text-slate-300 flex justify-between">
                                 <span>Roughness</span>
-                                <span className="font-mono text-[10px]">{store.materialConfig.roughness.toFixed(2)}</span>
+                                <span className="font-mono text-[10px]">{(store.materialConfig.roughness ?? 0.5).toFixed(2)}</span>
                             </label>
                             <input
                                 type="range"
@@ -308,7 +308,7 @@ const MaterialTexturePanel: React.FC<MaterialTexturePanelProps> = ({ store, exec
                             <div className="space-y-1">
                                 <label className="text-xs text-slate-300 flex justify-between">
                                     <span>Repeat X</span>
-                                    <span className="font-mono text-[10px]">{textureConfig.repeatX.toFixed(1)}</span>
+                                    <span className="font-mono text-[10px]">{(textureConfig.repeatX ?? 1).toFixed(1)}</span>
                                 </label>
                                 <input
                                     type="range"
@@ -325,7 +325,7 @@ const MaterialTexturePanel: React.FC<MaterialTexturePanelProps> = ({ store, exec
                             <div className="space-y-1">
                                 <label className="text-xs text-slate-300 flex justify-between">
                                     <span>Repeat Y</span>
-                                    <span className="font-mono text-[10px]">{textureConfig.repeatY.toFixed(1)}</span>
+                                    <span className="font-mono text-[10px]">{(textureConfig.repeatY ?? 1).toFixed(1)}</span>
                                 </label>
                                 <input
                                     type="range"
@@ -380,7 +380,10 @@ const SpecsPrecisionPanel: React.FC<SpecsPrecisionPanelProps> = ({ store, sendCo
     const [validationResult, setValidationResult] = useState<ReturnType<typeof validateForPrinter> | null>(null);
 
     // Get current dimensions from specs
-    const currentDimensions: Dimensions | null = store.specs ? {
+    const currentDimensions: Dimensions | null = store.specs &&
+        typeof store.specs.width === 'number' &&
+        typeof store.specs.height === 'number' &&
+        typeof store.specs.depth === 'number' ? {
         width: store.specs.width,
         height: store.specs.height,
         depth: store.specs.depth,
@@ -537,7 +540,7 @@ const SpecsPrecisionPanel: React.FC<SpecsPrecisionPanelProps> = ({ store, sendCo
                                     onChange={(e) => setTargetWidth(e.target.value)}
                                     onBlur={() => targetWidth && handleDimensionInput('width', targetWidth)}
                                     onKeyDown={(e) => e.key === 'Enter' && handleDimensionInput('width', targetWidth)}
-                                    placeholder={currentDimensions.width.toFixed(store.units === 'mm' ? 1 : 2)}
+                                    placeholder={(currentDimensions.width ?? 0).toFixed(store.units === 'mm' ? 1 : 2)}
                                     className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white font-mono placeholder-slate-600"
                                 />
                             </div>
@@ -549,7 +552,7 @@ const SpecsPrecisionPanel: React.FC<SpecsPrecisionPanelProps> = ({ store, sendCo
                                     onChange={(e) => setTargetHeight(e.target.value)}
                                     onBlur={() => targetHeight && handleDimensionInput('height', targetHeight)}
                                     onKeyDown={(e) => e.key === 'Enter' && handleDimensionInput('height', targetHeight)}
-                                    placeholder={currentDimensions.height.toFixed(store.units === 'mm' ? 1 : 2)}
+                                    placeholder={(currentDimensions.height ?? 0).toFixed(store.units === 'mm' ? 1 : 2)}
                                     className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white font-mono placeholder-slate-600"
                                 />
                             </div>
@@ -561,7 +564,7 @@ const SpecsPrecisionPanel: React.FC<SpecsPrecisionPanelProps> = ({ store, sendCo
                                     onChange={(e) => setTargetDepth(e.target.value)}
                                     onBlur={() => targetDepth && handleDimensionInput('depth', targetDepth)}
                                     onKeyDown={(e) => e.key === 'Enter' && handleDimensionInput('depth', targetDepth)}
-                                    placeholder={currentDimensions.depth.toFixed(store.units === 'mm' ? 1 : 2)}
+                                    placeholder={(currentDimensions.depth ?? 0).toFixed(store.units === 'mm' ? 1 : 2)}
                                     className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white font-mono placeholder-slate-600"
                                 />
                             </div>
@@ -1022,7 +1025,10 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
       return `${d.getHours()}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
   };
 
-  const { weight, cost } = store.specs 
+  const { weight, cost } = store.specs &&
+    typeof store.specs.width === 'number' &&
+    typeof store.specs.height === 'number' &&
+    typeof store.specs.depth === 'number'
     ? calculateFilamentCost(
         store.specs.width,
         store.specs.height,
@@ -1616,7 +1622,7 @@ export const Panels: React.FC<PanelsProps> = ({ handleToolClick, handleExport, s
                    <div className="space-y-1">
                       <div className="flex justify-between">
                           <span className="text-xs text-slate-300">Section Cut</span>
-                          <span className="text-[10px] text-slate-500">{store.clippingValue.toFixed(1)}</span>
+                          <span className="text-[10px] text-slate-500">{(store.clippingValue ?? 0).toFixed(1)}</span>
                       </div>
                       <input type="range" min="-5" max="5" step="0.1" value={store.clippingValue} onChange={(e) => { store.setClippingValue(parseFloat(e.target.value)); sendCommand('setClipping', { value: parseFloat(e.target.value) }); }} className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500" />
                    </div>
