@@ -25,19 +25,19 @@ interface BuilderProps {
 }
 
 const MODE_CONFIG: Record<WorkspaceMode, { tabs: Tab[], label: string, icon: string }> = {
-  maker: { label: '3D Print', icon: '🖨️', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'print', 'export', 'history'] },
-  engineer: { label: 'CAD / Eng', icon: '⚙️', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'sketch', 'library', 'export', 'history'] },
-  designer: { label: 'Product Design', icon: '🎨', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'environment', 'export', 'history', 'bookmarks'] },
-  game_dev: { label: 'Game Assets', icon: '🎮', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'export', 'history'] },
-  architect: { label: 'Architecture', icon: '🏛️', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'sketch', 'library', 'environment', 'export', 'history', 'bookmarks'] },
-  animator: { label: 'Animation/VFX', icon: '🎬', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
-  jewelry: { label: 'Jewelry Design', icon: '💎', tabs: ['tools', 'hierarchy', 'specs', 'library', 'material', 'environment', 'export', 'history'] },
-  medical: { label: 'Medical/Sci', icon: '🏥', tabs: ['tools', 'hierarchy', 'specs', 'library', 'print', 'export', 'history'] },
-  ecommerce: { label: 'E-commerce', icon: '🛒', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
-  sculptor: { label: 'Digital Art', icon: '🗿', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
-  automotive: { label: 'Automotive', icon: '🚗', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
-  fashion: { label: 'Fashion', icon: '👗', tabs: ['tools', 'hierarchy', 'specs', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
-  education: { label: 'Learning', icon: '📚', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'library', 'export', 'history'] }
+  maker: { label: '3D Print', icon: '🖨️', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'print', 'export', 'history'] },
+  engineer: { label: 'CAD / Eng', icon: '⚙️', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'sketch', 'animator', 'library', 'export', 'history'] },
+  designer: { label: 'Product Design', icon: '🎨', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'environment', 'export', 'history', 'bookmarks'] },
+  game_dev: { label: 'Game Assets', icon: '🎮', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'export', 'history'] },
+  architect: { label: 'Architecture', icon: '🏛️', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'sketch', 'animator', 'library', 'environment', 'export', 'history', 'bookmarks'] },
+  animator: { label: 'Animation/VFX', icon: '🎬', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
+  jewelry: { label: 'Jewelry Design', icon: '💎', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
+  medical: { label: 'Medical/Sci', icon: '🏥', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'library', 'print', 'export', 'history'] },
+  ecommerce: { label: 'E-commerce', icon: '🛒', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
+  sculptor: { label: 'Digital Art', icon: '🗿', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
+  automotive: { label: 'Automotive', icon: '🚗', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
+  fashion: { label: 'Fashion', icon: '👗', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'material', 'environment', 'export', 'history'] },
+  education: { label: 'Learning', icon: '📚', tabs: ['tools', 'hierarchy', 'specs', 'parameters', 'animator', 'library', 'export', 'history'] }
 };
 
 export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProject }) => {
