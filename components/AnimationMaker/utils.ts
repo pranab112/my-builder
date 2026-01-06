@@ -232,8 +232,79 @@ export const injectDriverScript = (html: string) => {
           setTimeout(() => {
               initTools();
               window.parent.postMessage({ type: 'sceneReady' }, '*');
+
+              // Expose default transform parameters after a delay for user code to execute
+              setTimeout(() => exposeDefaultParameters(), 500);
           }, 100);
       })();
+
+      // --- AUTO-EXPOSE DEFAULT PARAMETERS ---
+      function exposeDefaultParameters() {
+          try {
+              // Find main meshes in scene (exclude helpers, gizmos, etc.)
+              const mainMeshes = [];
+              window.scene.traverse((obj) => {
+                  if (obj.isMesh &&
+                      !obj.userData.isGizmo &&
+                      !obj.userData.isHelper &&
+                      obj.type !== 'GridHelper' &&
+                      obj.type !== 'AxesHelper' &&
+                      obj.name !== 'TransformControlsPlane') {
+                      mainMeshes.push(obj);
+                  }
+              });
+
+              if (mainMeshes.length === 0) return;
+
+              // Get the first main mesh (or could be a group)
+              const mainObject = mainMeshes[0];
+
+              // Create transform proxy object for GUI
+              const transformParams = {
+                  positionX: mainObject.position.x,
+                  positionY: mainObject.position.y,
+                  positionZ: mainObject.position.z,
+                  rotationX: THREE.MathUtils.radToDeg(mainObject.rotation.x),
+                  rotationY: THREE.MathUtils.radToDeg(mainObject.rotation.y),
+                  rotationZ: THREE.MathUtils.radToDeg(mainObject.rotation.z),
+                  scale: mainObject.scale.x
+              };
+
+              // Create GUI and add controls
+              const gui = new window.GUI();
+
+              // Position controls
+              gui.add(transformParams, 'positionX', -10, 10, 0.1).name('Position X').onChange((v) => {
+                  mainMeshes.forEach(m => m.position.x = v);
+              });
+              gui.add(transformParams, 'positionY', -10, 10, 0.1).name('Position Y').onChange((v) => {
+                  mainMeshes.forEach(m => m.position.y = v);
+              });
+              gui.add(transformParams, 'positionZ', -10, 10, 0.1).name('Position Z').onChange((v) => {
+                  mainMeshes.forEach(m => m.position.z = v);
+              });
+
+              // Rotation controls
+              gui.add(transformParams, 'rotationX', -180, 180, 1).name('Rotation X').onChange((v) => {
+                  mainMeshes.forEach(m => m.rotation.x = THREE.MathUtils.degToRad(v));
+              });
+              gui.add(transformParams, 'rotationY', -180, 180, 1).name('Rotation Y').onChange((v) => {
+                  mainMeshes.forEach(m => m.rotation.y = THREE.MathUtils.degToRad(v));
+              });
+              gui.add(transformParams, 'rotationZ', -180, 180, 1).name('Rotation Z').onChange((v) => {
+                  mainMeshes.forEach(m => m.rotation.z = THREE.MathUtils.degToRad(v));
+              });
+
+              // Scale control (uniform)
+              gui.add(transformParams, 'scale', 0.1, 5, 0.1).name('Scale').onChange((v) => {
+                  mainMeshes.forEach(m => m.scale.setScalar(v));
+              });
+
+              console.log('[Driver] Auto-exposed', gui.controllers.length, 'transform parameters');
+          } catch(e) {
+              console.warn('[Driver] exposeDefaultParameters error:', e.message);
+          }
+      }
 
       // --- SYSTEM: SCENE SNIFFER (Backup for AI-created scenes) ---
       const _render = THREE.WebGLRenderer.prototype.render;
