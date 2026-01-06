@@ -2,6 +2,9 @@
 import { backend } from './backend';
 import { WorkspaceMode } from '../components/AnimationMaker/types';
 import { debug } from './debugService';
+import { successTracking } from './successTrackingService';
+import { analyzeMultipleViews, buildMultiViewContext } from './multiViewAnalysisService';
+import { buildSceneContext, buildSceneContextForPrompt, type SceneObject } from './sceneContextService';
 
 // Types
 export interface CategorySuggestion {
@@ -36,7 +39,8 @@ const getJSON = (text: string): any => {
 // Comprehensive validation for AI-generated Three.js code
 // ═══════════════════════════════════════════════════════════════════════════════
 
-interface ValidationResult {
+// Export for use in store and UI
+export interface ValidationResult {
     isValid: boolean;
     cleanedCode: string;
     warnings: string[];
@@ -47,6 +51,12 @@ interface ValidationResult {
         linesOfCode: number;
         complexity: 'low' | 'medium' | 'high';
     };
+}
+
+// Generation result with validation
+export interface GenerationResult {
+    code: string;
+    validation: ValidationResult;
 }
 
 // Security patterns that are dangerous or not allowed
@@ -548,13 +558,25 @@ export const enhanceUserPrompt = async (prompt: string, category: string, mode: 
     return getText(response);
 };
 
+// Scene graph data for context awareness
+export interface SceneGraphItem {
+    id: string;
+    name: string;
+    type: string;
+    visible: boolean;
+    selected: boolean;
+    position?: { x: number; y: number; z: number };
+    scale?: { x: number; y: number; z: number };
+}
+
 export const generateAnimationCode = async (
     prompt: string,
     existingCode: string | undefined,
-    imageToUse: string | undefined,
+    imagesToUse: string[],  // Changed: now accepts array of images for multi-view analysis
     category: string,
-    workspaceMode: WorkspaceMode
-): Promise<string> => {
+    workspaceMode: WorkspaceMode,
+    sceneGraph?: SceneGraphItem[]  // NEW: Scene context for spatial awareness
+): Promise<GenerationResult> => {
 
     const systemPrompt = `You are an expert Three.js developer. Generate ONLY JavaScript code for a 3D modeling tool.
 
@@ -630,42 +652,106 @@ REMEMBER:
 5. Use MeshStandardMaterial for objects (lighting is pre-configured)
 `;
 
+    // Inject learning context from previous successful generations
+    const learningContext = successTracking.buildContextForPrompt();
+
+    // Perform multi-view analysis if multiple images provided
+    let multiViewContext = '';
+    if (imagesToUse && imagesToUse.length > 1) {
+        console.log(`[AI Generation] Analyzing ${imagesToUse.length} images for multi-view context...`);
+        try {
+            const multiViewAnalysis = await analyzeMultipleViews(imagesToUse);
+            if (multiViewAnalysis) {
+                multiViewContext = buildMultiViewContext(multiViewAnalysis);
+                console.log('[AI Generation] Multi-view analysis complete:', {
+                    views: multiViewAnalysis.views.length,
+                    complexity: multiViewAnalysis.estimatedComplexity
+                });
+            }
+        } catch (error) {
+            console.warn('[AI Generation] Multi-view analysis failed, proceeding without:', error);
+        }
+    }
+
+    // Build scene context for spatial awareness (avoid overlaps, maintain consistency)
+    let sceneContext = '';
+    if (sceneGraph && sceneGraph.length > 0) {
+        console.log(`[AI Generation] Building scene context from ${sceneGraph.length} objects...`);
+        try {
+            const context = buildSceneContext(sceneGraph);
+            if (context) {
+                sceneContext = buildSceneContextForPrompt(context);
+                console.log('[AI Generation] Scene context built:', {
+                    objectCount: context.totalObjectCount,
+                    suggestedPlacement: context.suggestedPlacement.reason
+                });
+            }
+        } catch (error) {
+            console.warn('[AI Generation] Scene context build failed, proceeding without:', error);
+        }
+    }
+
     const textContent = `User Prompt: ${prompt}.
-        ${existingCode ? `Existing Code (Update this): \n${existingCode}` : ''}`;
+        ${existingCode ? `Existing Code (Update this): \n${existingCode}` : ''}${learningContext}${multiViewContext}${sceneContext}`;
 
     // Debug: Log API call
     debug.generationAPICall('gemini-3-pro-preview', systemPrompt.length, textContent.length);
 
     try {
-        // Build content with image if provided
+        // Build content with images if provided (supports multiple images for multi-view analysis)
         let contents: any;
-        if (imageToUse) {
-            // Extract base64 data from data URL
-            const base64Data = imageToUse.split(',')[1];
-            const mimeType = imageToUse.split(';')[0].split(':')[1] || 'image/jpeg';
+        if (imagesToUse && imagesToUse.length > 0) {
+            // Build parts array with all images
+            const imageParts = imagesToUse.map((image, index) => {
+                const base64Data = image.split(',')[1];
+                const mimeType = image.split(';')[0].split(':')[1] || 'image/jpeg';
+                return {
+                    inlineData: {
+                        mimeType: mimeType,
+                        data: base64Data
+                    }
+                };
+            });
+
+            // Construct multi-image analysis instructions
+            const imageCount = imagesToUse.length;
+            const multiImageInstructions = imageCount > 1
+                ? `
+MULTI-VIEW IMAGE ANALYSIS (${imageCount} images provided):
+1. Analyze ALL ${imageCount} reference images together - they show the SAME object from different angles
+2. Use multiple views to understand the complete 3D structure:
+   - Compare front/back views for depth estimation
+   - Use side views for width and profile shapes
+   - Top/bottom views reveal hidden geometry
+3. Cross-reference details between images to ensure accuracy
+4. Resolve ambiguities by comparing corresponding features across views
+5. Build a coherent 3D model that matches ALL provided views`
+                : `
+SINGLE IMAGE ANALYSIS:
+1. Analyze the reference image for geometric shapes and proportions
+2. Identify structural elements, colors, and textures
+3. Infer hidden/back geometry based on visible structure`;
 
             contents = {
                 role: 'user',
                 parts: [
-                    {
-                        inlineData: {
-                            mimeType: mimeType,
-                            data: base64Data
-                        }
-                    },
+                    ...imageParts,  // All images first
                     { text: textContent + `
 
-IMAGE ANALYSIS INSTRUCTIONS:
-1. Analyze the reference image for geometric shapes and proportions
-2. Identify structural elements, colors, and textures
-3. Create Three.js meshes that represent the image accurately
+${multiImageInstructions}
+
+3D RECONSTRUCTION REQUIREMENTS:
+- Extract accurate proportions from the reference image(s)
+- Identify primary shapes (boxes, cylinders, spheres, etc.)
+- Note colors, materials, and surface properties
+- Create Three.js meshes that represent the object accurately
 
 OUTPUT REQUIREMENTS (same as above):
 - Return ONLY pure JavaScript code
 - NO HTML, NO imports, NO scene creation
 - Use window.scene.add() to add objects
-- Add GUI controls for key parameters
-- Name each mesh descriptively` }
+- Add GUI controls for key parameters (dimensions, colors)
+- Name each mesh descriptively based on what it represents` }
                 ]
             };
         } else {
@@ -700,7 +786,11 @@ OUTPUT REQUIREMENTS (same as above):
             // Still return the cleaned code, let the iframe handle runtime errors
         }
 
-        return validation.cleanedCode;
+        // Return both code and validation for UI display
+        return {
+            code: validation.cleanedCode,
+            validation: validation
+        };
     } catch (error: any) {
         debug.generationAPIResponse(0, true);
         throw error;

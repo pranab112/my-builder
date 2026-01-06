@@ -15,6 +15,8 @@ import { BuilderViewport } from './Builder/Viewport';
 import { BuilderStatusBar } from './Builder/StatusBar';
 import { debug } from '../../services/debugService';
 import { DebugPanel } from './DebugPanel';
+import { iframeCommands, commands } from '../../services/iframeCommandService';
+import { successTracking } from '../../services/successTrackingService';
 
 interface BuilderProps {
   project: SavedProject;
@@ -53,7 +55,14 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
   // --- INIT & SYNC ---
   useEffect(() => {
     store.loadProject(project);
-    return () => store.resetStore();
+
+    // Initialize command service with iframe ref
+    iframeCommands.init(iframeRef);
+
+    return () => {
+      store.resetStore();
+      iframeCommands.destroy();
+    };
   }, [project.id]);
 
   useEffect(() => {
@@ -73,44 +82,102 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       // Debug: Log all messages from iframe
       debug.messageFromIframe(event.data.type, event.data);
 
-      if (event.data.type === 'error') {
-        debug.runtimeError(event.data.message, 'Iframe');
-        store.setRuntimeError(event.data.message);
-      }
-      if (event.data.type === 'geometryStats') store.setSpecs(event.data.stats);
-      if (event.data.type === 'exportComplete') {
-        debug.exportCompleted('unknown');
-        alert("Export started! Check your downloads.");
-      }
-      if (event.data.type === 'sceneGraphUpdate') {
+      switch (event.data.type) {
+        case 'error':
+          debug.runtimeError(event.data.message, 'Iframe');
+          store.setRuntimeError(event.data.message);
+          break;
+
+        case 'geometryStats':
+          store.setSpecs(event.data.stats);
+          break;
+
+        case 'exportComplete':
+          debug.exportCompleted('unknown');
+          alert("Export started! Check your downloads.");
+          break;
+
+        case 'sceneGraphUpdate':
           store.setSceneGraph(event.data.graph);
           const selected = event.data.graph.filter((n: any) => n.selected).map((n: any) => n.id);
           store.setSelectedObjectIds(selected);
           debug.sceneGraphUpdated(event.data.graph.length, selected.length);
-      }
-      if (event.data.type === 'cameraState') {
+          break;
+
+        case 'selectionChanged':
+          // Direct selection change from iframe (e.g., click-to-select)
+          // Only update if source is not 'command' (to avoid echo)
+          if (event.data.source !== 'command') {
+            store.setSelectedObjectIds(event.data.selectedIds || []);
+            debug.log?.(`Selection changed from ${event.data.source}: ${event.data.selectedIds?.join(', ') || 'none'}`);
+          }
+          break;
+
+        case 'commandAck':
+          // Command acknowledgment from iframe
+          // Can be used for optimistic UI updates or error handling
+          if (!event.data.success) {
+            console.warn(`[Command Failed] ${event.data.commandType}: ${event.data.error}`);
+            // Optionally show error to user for critical commands
+            if (event.data.commandType === 'addPrimitive' || event.data.commandType === 'performBoolean') {
+              store.setError(`Operation failed: ${event.data.error}`);
+            }
+          } else {
+            // On successful add/boolean, we could update selection optimistically
+            // but the sceneGraphUpdate will handle this
+            debug.log?.(`Command ${event.data.commandType} acknowledged`);
+          }
+          break;
+
+        case 'codeExecuted':
+          // User code execution completed
+          if (event.data.success) {
+            debug.log?.(`Code executed: ${event.data.stats?.executionTime}ms, ${event.data.stats?.objectsAdded} objects`);
+          }
+          break;
+
+        case 'cameraState':
           const { position, target } = event.data;
           store.addBookmark({
-              id: crypto.randomUUID(),
-              name: `View ${store.bookmarks.length + 1}`,
-              position,
-              target
+            id: crypto.randomUUID(),
+            name: `View ${store.bookmarks.length + 1}`,
+            position,
+            target
           });
-      }
-      if (event.data.type === 'guiConfig') {
+          break;
+
+        case 'guiConfig':
           store.setParameters(event.data.controls);
           debug.guiConfigReceived(event.data.controls.length);
-      }
-      if (event.data.type === 'sceneReady') {
+          break;
+
+        case 'sceneReady':
           debug.renderSceneDetected(true, true, true);
+          break;
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
-  // --- AUTO-DEBUG LOGIC (with debounce) ---
+  // --- SMART AUTO-DEBUG LOGIC (with history tracking) ---
   const autoDebugTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastErrorRef = useRef<string | null>(null);
+
+  // Helper to check if we've already tried to fix this exact error
+  const hasTriedSameError = (currentError: string): boolean => {
+    const recentAttempts = store.fixAttempts.slice(-3);
+    return recentAttempts.some(a => a.errorBefore === currentError);
+  };
+
+  // Helper to check if last fix created a new error (regression)
+  const lastFixCausedRegression = (): boolean => {
+    if (store.fixAttempts.length < 2) return false;
+    const lastAttempt = store.fixAttempts[store.fixAttempts.length - 1];
+    const prevAttempt = store.fixAttempts[store.fixAttempts.length - 2];
+    // If previous attempt succeeded but last one failed with different error
+    return prevAttempt.errorAfter === null && lastAttempt.errorAfter !== null;
+  };
 
   useEffect(() => {
       // Clear any pending auto-debug timer
@@ -124,17 +191,44 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
 
       // If we have an error and auto-debug is ON
       if (store.runtimeError && store.autoDebug) {
+          // SMART CHECK 1: Don't retry if same error as last time
+          if (lastErrorRef.current === store.runtimeError) {
+              console.log(`🤖 [Smart Auto-Debug] Same error detected, skipping retry`);
+              return;
+          }
+
+          // SMART CHECK 2: Don't retry if we've already tried this exact error
+          if (hasTriedSameError(store.runtimeError)) {
+              console.log(`🤖 [Smart Auto-Debug] Already attempted this error, suggesting manual review`);
+              store.setError("This error was already attempted. Consider different approach or manual fix.");
+              store.toggleAutoDebug();
+              return;
+          }
+
+          // SMART CHECK 3: If last fix caused regression, revert
+          if (lastFixCausedRegression() && store.lastSuccessfulCode) {
+              console.log(`🤖 [Smart Auto-Debug] Fix caused regression, reverting to last working version`);
+              store.revertToLastSuccessful();
+              store.toggleAutoDebug();
+              return;
+          }
+
           // DEBOUNCE: Wait 1.5 seconds before triggering auto-fix
-          // This prevents rapid retries and allows iframe to settle
           autoDebugTimerRef.current = setTimeout(() => {
               if (fixAttemptsRef.current < 3) {
-                  console.log(`🤖 [Auto-Debug] Triggering fix attempt ${fixAttemptsRef.current + 1}/3`);
+                  console.log(`🤖 [Smart Auto-Debug] Triggering fix attempt ${fixAttemptsRef.current + 1}/3`);
                   fixAttemptsRef.current += 1;
+                  lastErrorRef.current = store.runtimeError;
                   void handleAutoFix();
               } else {
-                  store.setError("Auto-debug paused: Too many consecutive errors. Please review the code manually.");
-                  store.toggleAutoDebug(); // Turn off safety to prevent infinite loop
-                  fixAttemptsRef.current = 0; // Reset for next time user engages
+                  // Check if we should offer revert option
+                  if (store.lastSuccessfulCode) {
+                      store.setError("Auto-debug paused: Multiple fixes failed. Click 'Revert' to restore last working version.");
+                  } else {
+                      store.setError("Auto-debug paused: Too many consecutive errors. Please review the code manually.");
+                  }
+                  store.toggleAutoDebug();
+                  fixAttemptsRef.current = 0;
               }
           }, 1500);
       }
@@ -179,15 +273,22 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
   }, [workspaceMode]);
 
   // --- SHORTCUTS LISTENER ---
-  const sendViewCommand = (cmd: string) => iframeRef.current?.contentWindow?.postMessage({ type: 'setView', view: cmd }, '*');
-  const takeSnapshot = () => iframeRef.current?.contentWindow?.postMessage({ type: 'takeSnapshot' }, '*');
-  const handleExport = (format: string) => iframeRef.current?.contentWindow?.postMessage({ type: 'exportModel', format }, '*');
-  const handleAutoOrient = () => iframeRef.current?.contentWindow?.postMessage({ type: 'autoOrient', active: true }, '*');
-  const handleSelectObject = (id: string | null) => iframeRef.current?.contentWindow?.postMessage({ type: 'selectObject', objectId: id }, '*');
-  const handleCaptureBookmark = () => iframeRef.current?.contentWindow?.postMessage({ type: 'requestCameraState' }, '*');
-  const handleRestoreBookmark = (bm: any) => iframeRef.current?.contentWindow?.postMessage({ type: 'setCameraState', position: bm.position, target: bm.target }, '*');
-  const handleParameterChange = (name: string, value: any) => iframeRef.current?.contentWindow?.postMessage({ type: 'updateParam', name, value }, '*');
-  const handleSketchExtrude = (points: {x:number, y:number}[], height: number) => iframeRef.current?.contentWindow?.postMessage({ type: 'extrudeSketch', points, height }, '*');
+  // Helper to send messages to iframe with command ID for acknowledgment pattern
+  const sendToIframe = (message: any) => {
+    if (iframeRef.current?.contentWindow) {
+      iframeRef.current.contentWindow.postMessage(message, '*');
+    }
+  };
+
+  const sendViewCommand = (cmd: string) => sendToIframe({ type: 'setView', view: cmd });
+  const takeSnapshot = () => sendToIframe({ type: 'takeSnapshot' });
+  const handleExport = (format: string) => sendToIframe({ type: 'exportModel', format });
+  const handleAutoOrient = () => sendToIframe({ type: 'autoOrient', active: true });
+  const handleSelectObject = (id: string | null) => sendToIframe({ type: 'selectObject', objectId: id, commandId: `select_${Date.now()}` });
+  const handleCaptureBookmark = () => sendToIframe({ type: 'requestCameraState' });
+  const handleRestoreBookmark = (bm: any) => sendToIframe({ type: 'setCameraState', position: bm.position, target: bm.target });
+  const handleParameterChange = (name: string, value: any) => sendToIframe({ type: 'updateParam', name, value, commandId: `param_${Date.now()}` });
+  const handleSketchExtrude = (points: {x:number, y:number}[], height: number) => sendToIframe({ type: 'extrudeSketch', points, height, commandId: `extrude_${Date.now()}` });
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -233,28 +334,65 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
     store.setGenerating(true);
     store.setError(null);
     store.setRuntimeError(null);
+    store.setValidationReport(null);
     store.setShowCode(false);
+    store.clearFixAttempts(); // Clear fix history on new generation
     fixAttemptsRef.current = 0; // Reset fix counter on manual generate
     try {
-      const imageToUse = store.refImages.length > 0 ? store.refImages[0] : undefined;
+      // Pass ALL reference images to AI for multi-view analysis (not just first one)
+      const imagesToUse = store.refImages.length > 0 ? store.refImages : [];
       let finalPrompt = store.prompt;
       if (project.importedData && !store.htmlCode) {
           finalPrompt += ` \n[SYSTEM: Use 'await window.loadImportedModel(window.IMPORTED_MODEL_URL, window.IMPORTED_MODEL_TYPE)'. Model type: '${project.importedType || 'stl'}'.]`;
       }
-      const code = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imageToUse, project.category, workspaceMode);
-      if (!code || code.length < 50) throw new Error("Generated code seems invalid.");
+      const result = await generateAnimationCode(finalPrompt, store.htmlCode || undefined, imagesToUse, project.category, workspaceMode, store.sceneGraph);
+      if (!result.code || result.code.length < 50) throw new Error("Generated code seems invalid.");
+
+      // Store validation report for UI display
+      store.setValidationReport({
+        isValid: result.validation.isValid,
+        warnings: result.validation.warnings,
+        errors: result.validation.errors,
+        stats: {
+          linesOfCode: result.validation.stats.linesOfCode,
+          complexity: result.validation.stats.complexity
+        },
+        timestamp: Date.now()
+      });
 
       // Debug: Generation completed
-      debug.generationCompleted(code.length);
+      debug.generationCompleted(result.code.length);
+
+      // Track successful generation for learning
+      successTracking.record(
+        store.prompt,
+        result.code,
+        result.validation.isValid,  // Initial success based on validation
+        result.validation.stats.complexity
+      );
 
       // Pass the prompt to history
-      store.setHtmlCode(code, true, store.prompt || "Generated Model");
+      store.setHtmlCode(result.code, true, store.prompt || "Generated Model");
+
+      // Save as last successful code for potential revert (if validation passed)
+      if (result.validation.isValid) {
+        store.setLastSuccessfulCode(result.code);
+      }
 
       store.setPrompt('');
       store.setRefImages([]);
     } catch (err: any) {
       debug.generationFailed(err.message || "Unknown error");
       store.setError(err.message || "Failed to generate.");
+
+      // Track failed generation
+      successTracking.record(
+        store.prompt,
+        '',
+        false,
+        'medium',
+        err.message || "Unknown error"
+      );
     } finally {
       store.setGenerating(false);
     }
@@ -266,26 +404,51 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
       // Debug: Start auto-fix tracking
       debug.autoFixStarted(store.runtimeError, fixAttemptsRef.current);
 
+      // Create fix attempt record
+      const attemptId = crypto.randomUUID();
+      const codeBeforeFix = store.htmlCode;
+
+      store.addFixAttempt({
+        id: attemptId,
+        timestamp: Date.now(),
+        errorBefore: store.runtimeError,
+        errorAfter: null,  // Will be updated when we know the result
+        fixDescription: `Fix attempt for: ${store.runtimeError.substring(0, 50)}...`,
+        codeSnapshot: codeBeforeFix
+      });
+
       store.setFixing(true);
       try {
-          const fixed = await fixThreeJSCode(store.htmlCode, store.runtimeError);
-          // When auto-fixing, we update the code.
-          // Note: The 'useEffect' for htmlCode will clear runtimeError eventually if iframe loads successfully.
-          // But here we must be careful not to loop. The loop is guarded by fixAttemptsRef.
+          // Include previous fix attempts context for smarter fixes
+          const previousErrors = store.fixAttempts
+            .slice(-3)
+            .map(a => a.errorBefore)
+            .filter(e => e !== store.runtimeError);
+
+          const contextualError = previousErrors.length > 0
+            ? `${store.runtimeError}\n\n[CONTEXT: Previous errors that were NOT this one: ${previousErrors.join(', ')}. Do NOT introduce those errors again.]`
+            : store.runtimeError;
+
+          const fixed = await fixThreeJSCode(store.htmlCode, contextualError);
+
+          // Update the code
           store.setHtmlCode(fixed, true, `Auto-Fix: ${store.runtimeError.substring(0, 30)}...`);
 
           // Debug: Auto-fix completed
           debug.autoFixCompleted(true, fixed.length);
 
-          // DO NOT clear runtimeError here immediately.
-          // Let the iframe reload; if it succeeds, it wont send an error, and store.runtimeError is cleared by user or new success?
-          // Actually we rely on the iframe NOT sending an error.
-          // But we should probably clear the old error so the effect doesn't re-fire instantly on same error string.
+          // Clear old error to let iframe determine if fix worked
           store.setRuntimeError(null);
+
+          // Note: The fix attempt result will be updated when we receive (or don't receive)
+          // a new runtime error from the iframe
 
       } catch (e) {
           debug.autoFixCompleted(false);
           store.setError("Failed to auto-fix.");
+
+          // Update attempt as failed
+          store.updateFixAttemptResult(attemptId, "Fix generation failed");
       } finally {
           store.setFixing(false);
       }
@@ -408,7 +571,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
            />
            
            {store.htmlCode && !store.showCode && (
-                <Panels 
+                <Panels
                     handleToolClick={handleToolClick}
                     handleExport={handleExport}
                     sendViewCommand={sendViewCommand}
@@ -417,6 +580,7 @@ export const Builder: React.FC<BuilderProps> = ({ project, onBack, onUpdateProje
                     handleSelectObject={handleSelectObject}
                     handleParameterChange={handleParameterChange}
                     handleSketchExtrude={handleSketchExtrude}
+                    sendToIframe={sendToIframe}
                 />
            )}
            <BuilderStatusBar onAutoFix={handleAutoFix} />

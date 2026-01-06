@@ -256,21 +256,36 @@ export const injectDriverScript = (html: string) => {
           transformControl = new TransformControls(window.camera, window.renderer.domElement);
           transformControl.addEventListener('dragging-changed', (event) => {
               if (window.controls) window.controls.enabled = !event.value;
+              // Broadcast when gizmo interaction ends (object was moved/rotated/scaled)
+              if (!event.value) {
+                  broadcastSceneGraph();
+              }
+          });
+          // Broadcast on object change (continuous updates during gizmo drag)
+          transformControl.addEventListener('objectChange', () => {
+              // Debounced broadcast during drag
+              if (window._gizmoDragTimeout) clearTimeout(window._gizmoDragTimeout);
+              window._gizmoDragTimeout = setTimeout(broadcastSceneGraph, 100);
           });
           window.scene.add(transformControl);
 
           // 2. Setup CSG
           csgEvaluator = new Evaluator();
           csgEvaluator.attributes = ['position', 'normal'];
-          csgEvaluator.useGroups = false; 
-          
+          csgEvaluator.useGroups = false;
+
           // 3. Setup Clipping Plane (Hidden by default)
           clippingPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 100);
           // We don't apply it globally yet, user must enable it
 
-          // 4. Start Loop
-          setInterval(broadcastSceneGraph, 500); // Faster polling for responsiveness
-          broadcastSceneGraph();
+          // 4. EVENT-DRIVEN STATE SYNC (replaces 500ms polling)
+          // Instead of polling, we broadcast immediately after state changes
+          // Keep a low-frequency heartbeat for edge cases (5 seconds)
+          setInterval(broadcastSceneGraph, 5000); // Reduced heartbeat for safety
+          broadcastSceneGraph(); // Initial broadcast
+
+          // 5. Click-to-select handler for direct object picking
+          setupClickToSelect();
       }
 
       // --- SYSTEM: SMART GUI PROXY ---
@@ -420,10 +435,53 @@ export const injectDriverScript = (html: string) => {
           } catch(e) { console.warn('[Driver] loadImportedModel error:', e.message); }
       };
 
+      // --- CLICK TO SELECT (Raycasting) ---
+      function setupClickToSelect() {
+          const raycaster = new THREE.Raycaster();
+          const mouse = new THREE.Vector2();
+
+          window.renderer.domElement.addEventListener('click', (event) => {
+              // Skip if we're dragging the gizmo
+              if (transformControl && transformControl.dragging) return;
+              // Skip if clicking on GUI elements
+              if (event.target !== window.renderer.domElement) return;
+
+              // Calculate mouse position in normalized device coordinates
+              const rect = window.renderer.domElement.getBoundingClientRect();
+              mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+              mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+              raycaster.setFromCamera(mouse, window.camera);
+
+              // Get all meshes (excluding helpers)
+              const meshes = [];
+              window.scene.traverse((obj) => {
+                  if (obj.isMesh &&
+                      obj !== transformControl &&
+                      obj.name !== 'TransformControlsPlane' &&
+                      !obj.userData.isGizmo &&
+                      obj.type !== 'GridHelper' &&
+                      obj.type !== 'AxesHelper') {
+                      meshes.push(obj);
+                  }
+              });
+
+              const intersects = raycaster.intersectObjects(meshes, false);
+
+              if (intersects.length > 0) {
+                  const hitObject = intersects[0].object;
+                  selectObjects([hitObject.uuid], 'click');
+              } else {
+                  // Clicked empty space - deselect
+                  selectObjects([], 'click');
+              }
+          });
+      }
+
       // --- UTILS ---
       function getObjectById(id) { return window.scene.getObjectByProperty('uuid', id); }
 
-      function selectObjects(ids) {
+      function selectObjects(ids, source = 'command') {
           try {
               selectedIds = ids || [];
               if (transformControl) {
@@ -435,7 +493,15 @@ export const injectDriverScript = (html: string) => {
                       }
                   }
               }
+              // IMMEDIATE broadcast for responsive UI
               broadcastSceneGraph();
+
+              // Notify parent of selection change with source
+              window.parent.postMessage({
+                  type: 'selectionChanged',
+                  selectedIds: selectedIds,
+                  source: source // 'click', 'command', 'addPrimitive', 'boolean', etc.
+              }, '*');
           } catch(e) { console.warn('[Driver] selectObjects error:', e.message); }
       }
 
@@ -448,18 +514,33 @@ export const injectDriverScript = (html: string) => {
                   nodes.push({
                       id: obj.uuid,
                       name: obj.name || 'Untitled Mesh',
-                      type: obj.geometry.type,
+                      type: obj.geometry ? obj.geometry.type : 'Unknown',
                       visible: obj.visible,
-                      selected: selectedIds.includes(obj.uuid)
+                      selected: selectedIds.includes(obj.uuid),
+                      // Include transform data for richer state sync
+                      position: obj.position ? { x: obj.position.x, y: obj.position.y, z: obj.position.z } : null,
+                      scale: obj.scale ? { x: obj.scale.x, y: obj.scale.y, z: obj.scale.z } : null
                   });
               }
           });
-          window.parent.postMessage({ type: 'sceneGraphUpdate', graph: nodes }, '*');
+          window.parent.postMessage({ type: 'sceneGraphUpdate', graph: nodes, timestamp: Date.now() }, '*');
+      }
+
+      // --- COMMAND ACKNOWLEDGMENT HELPER ---
+      function acknowledgeCommand(commandId, type, success = true, data = {}) {
+          window.parent.postMessage({
+              type: 'commandAck',
+              commandId: commandId,
+              commandType: type,
+              success: success,
+              timestamp: Date.now(),
+              ...data
+          }, '*');
       }
 
       // --- EDITING COMMANDS ---
 
-      function addPrimitive(type) {
+      function addPrimitive(type, commandId) {
           try {
               let geo, mat = new THREE.MeshStandardMaterial({ color: 0x6366f1, roughness: 0.4, metalness: 0.1 });
               const size = 2;
@@ -468,7 +549,9 @@ export const injectDriverScript = (html: string) => {
                   case 'sphere': geo = new THREE.SphereGeometry(size/2, 32, 32); break;
                   case 'cylinder': geo = new THREE.CylinderGeometry(size/2, size/2, size, 32); break;
                   case 'plane': geo = new THREE.PlaneGeometry(size, size); mat.side = THREE.DoubleSide; break;
-                  default: return;
+                  default:
+                      if (commandId) acknowledgeCommand(commandId, 'addPrimitive', false, { error: 'Unknown primitive type' });
+                      return;
               }
               const mesh = new THREE.Mesh(geo, mat);
               mesh.name = type.charAt(0).toUpperCase() + type.slice(1) + '_' + Math.floor(Math.random()*100);
@@ -480,49 +563,72 @@ export const injectDriverScript = (html: string) => {
               }
 
               window.scene.add(mesh);
-              selectObjects([mesh.uuid]);
-          } catch(e) { console.warn('[Driver] addPrimitive error:', e.message); }
-      }
+              selectObjects([mesh.uuid], 'addPrimitive');
 
-      function performBoolean(op, targetId, toolId) {
-          const t = getObjectById(targetId);
-          const o = getObjectById(toolId);
-          if (!t || !o) return;
-
-          // Preserve original material
-          const originalMat = t.material.clone();
-
-          const b1 = new Brush(t.geometry, t.material);
-          const b2 = new Brush(o.geometry, o.material);
-          
-          // Sync transforms
-          b1.updateMatrixWorld(); b2.updateMatrixWorld();
-          b1.position.copy(t.position); b1.quaternion.copy(t.quaternion); b1.scale.copy(t.scale);
-          b2.position.copy(o.position); b2.quaternion.copy(o.quaternion); b2.scale.copy(o.scale);
-          b1.updateMatrixWorld(); b2.updateMatrixWorld();
-
-          let res;
-          if (op === 'union') res = csgEvaluator.evaluate(b1, b2, ADDITION);
-          else if (op === 'subtract') res = csgEvaluator.evaluate(b1, b2, SUBTRACTION);
-          else if (op === 'intersect') res = csgEvaluator.evaluate(b1, b2, INTERSECTION);
-
-          if (res) {
-              res.material = originalMat; // Restore material
-              res.name = t.name; // Keep name
-              
-              // Clean up inputs
-              t.geometry.dispose();
-              o.geometry.dispose();
-              window.scene.remove(t);
-              window.scene.remove(o);
-              
-              window.scene.add(res);
-              // CRITICAL: Immediately select the new object to keep UI in sync
-              selectObjects([res.uuid]);
+              // Acknowledge with new object ID for React sync
+              if (commandId) {
+                  acknowledgeCommand(commandId, 'addPrimitive', true, { objectId: mesh.uuid, objectName: mesh.name });
+              }
+          } catch(e) {
+              console.warn('[Driver] addPrimitive error:', e.message);
+              if (commandId) acknowledgeCommand(commandId, 'addPrimitive', false, { error: e.message });
           }
       }
 
-      function cleanExport(format) {
+      function performBoolean(op, targetId, toolId, commandId) {
+          const t = getObjectById(targetId);
+          const o = getObjectById(toolId);
+          if (!t || !o) {
+              if (commandId) acknowledgeCommand(commandId, 'performBoolean', false, { error: 'Target or tool object not found' });
+              return;
+          }
+
+          try {
+              // Preserve original material
+              const originalMat = t.material.clone();
+
+              const b1 = new Brush(t.geometry, t.material);
+              const b2 = new Brush(o.geometry, o.material);
+
+              // Sync transforms
+              b1.updateMatrixWorld(); b2.updateMatrixWorld();
+              b1.position.copy(t.position); b1.quaternion.copy(t.quaternion); b1.scale.copy(t.scale);
+              b2.position.copy(o.position); b2.quaternion.copy(o.quaternion); b2.scale.copy(o.scale);
+              b1.updateMatrixWorld(); b2.updateMatrixWorld();
+
+              let res;
+              if (op === 'union') res = csgEvaluator.evaluate(b1, b2, ADDITION);
+              else if (op === 'subtract') res = csgEvaluator.evaluate(b1, b2, SUBTRACTION);
+              else if (op === 'intersect') res = csgEvaluator.evaluate(b1, b2, INTERSECTION);
+
+              if (res) {
+                  res.material = originalMat; // Restore material
+                  res.name = t.name; // Keep name
+
+                  // Clean up inputs
+                  t.geometry.dispose();
+                  o.geometry.dispose();
+                  window.scene.remove(t);
+                  window.scene.remove(o);
+
+                  window.scene.add(res);
+                  // CRITICAL: Immediately select the new object to keep UI in sync
+                  selectObjects([res.uuid], 'boolean');
+
+                  // Acknowledge with result object ID
+                  if (commandId) {
+                      acknowledgeCommand(commandId, 'performBoolean', true, { resultId: res.uuid, resultName: res.name });
+                  }
+              } else {
+                  if (commandId) acknowledgeCommand(commandId, 'performBoolean', false, { error: 'Boolean operation returned no result' });
+              }
+          } catch(e) {
+              console.warn('[Driver] performBoolean error:', e.message);
+              if (commandId) acknowledgeCommand(commandId, 'performBoolean', false, { error: e.message });
+          }
+      }
+
+      function cleanExport(format, options = {}) {
           // 1. Clone scene to filter out helpers/gizmos
           const exportGroup = new THREE.Group();
           window.scene.traverse(obj => {
@@ -552,10 +658,214 @@ export const injectDriverScript = (html: string) => {
                   const blob = new Blob([JSON.stringify(gltf)], { type: 'text/plain' });
                   downloadBlob(blob, 'model.gltf');
               });
+          } else if (['step', 'iges', 'dxf', 'ply', 'obj-cad'].includes(format)) {
+              // CAD formats - extract geometry data
+              const allVertices = [];
+              const allIndices = [];
+              let vertexOffset = 0;
+
+              exportGroup.traverse(obj => {
+                  if (obj.isMesh && obj.geometry) {
+                      const geo = obj.geometry;
+                      const pos = geo.attributes.position;
+
+                      if (pos) {
+                          // Apply object's world matrix to vertices
+                          for (let i = 0; i < pos.count; i++) {
+                              const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+                              v.applyMatrix4(obj.matrixWorld);
+                              allVertices.push(v.x, v.y, v.z);
+                          }
+
+                          // Handle indices
+                          if (geo.index) {
+                              for (let i = 0; i < geo.index.count; i++) {
+                                  allIndices.push(geo.index.array[i] + vertexOffset);
+                              }
+                          } else {
+                              for (let i = 0; i < pos.count; i++) {
+                                  allIndices.push(i + vertexOffset);
+                              }
+                          }
+                          vertexOffset += pos.count;
+                      }
+                  }
+              });
+
+              const vertices = new Float32Array(allVertices);
+              const indices = new Uint32Array(allIndices);
+              const precision = options.precision || 6;
+              const units = options.units || 'mm';
+
+              let content, filename;
+
+              if (format === 'step') {
+                  content = generateSTEPContent(vertices, indices, precision, units);
+                  filename = 'model.step';
+              } else if (format === 'iges') {
+                  content = generateIGESContent(vertices, indices, precision, units);
+                  filename = 'model.igs';
+              } else if (format === 'dxf') {
+                  content = generateDXFContent(vertices, indices, precision, units, options.projection || '2d-xy');
+                  filename = 'model.dxf';
+              } else if (format === 'ply') {
+                  content = generatePLYContent(vertices, indices, precision, units);
+                  filename = 'model.ply';
+              } else if (format === 'obj-cad') {
+                  content = generateOBJCADContent(vertices, indices, precision, units);
+                  filename = 'model.obj';
+              }
+
+              const blob = new Blob([content], { type: 'text/plain' });
+              downloadBlob(blob, filename);
           }
-          
+
           // Cleanup
           exportGroup.clear();
+      }
+
+      // CAD format generators
+      function generateSTEPContent(vertices, indices, precision, units) {
+          const scale = units === 'inch' ? 1 / 25.4 : 1;
+          const timestamp = new Date().toISOString().split('T')[0];
+
+          let step = 'ISO-10303-21;\\nHEADER;\\n';
+          step += "FILE_DESCRIPTION(('ProShot 3D Builder Export'),'2;1');\\n";
+          step += "FILE_NAME('model.step','" + timestamp + "',('ProShot'),('3D Builder'),'ProShot CAD Export','ProShot','');\\n";
+          step += "FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\\nENDSEC;\\nDATA;\\n";
+
+          let id = 1;
+          step += '#' + (id++) + "=APPLICATION_CONTEXT('automotive design');\\n";
+          step += '#' + (id++) + "=PRODUCT_CONTEXT('',#1,'mechanical');\\n";
+          step += '#' + (id++) + "=PRODUCT('Part1','ProShot Export','',(#2));\\n";
+
+          // Add vertex points
+          const pointIds = [];
+          for (let i = 0; i < vertices.length; i += 3) {
+              const x = (vertices[i] * scale).toFixed(precision);
+              const y = (vertices[i + 1] * scale).toFixed(precision);
+              const z = (vertices[i + 2] * scale).toFixed(precision);
+              step += '#' + id + "=CARTESIAN_POINT('',(" + x + ',' + y + ',' + z + '));\\n';
+              pointIds.push(id++);
+          }
+
+          step += 'ENDSEC;\\nEND-ISO-10303-21;';
+          return step.replace(/\\\\n/g, '\\n');
+      }
+
+      function generateIGESContent(vertices, indices, precision, units) {
+          const scale = units === 'inch' ? 1 / 25.4 : 1;
+          let iges = '';
+
+          // Start section
+          iges += 'ProShot 3D Builder IGES Export'.padEnd(72) + 'S      1\\n';
+          iges += ('Generated: ' + new Date().toISOString()).padEnd(72) + 'S      2\\n';
+
+          // Global section (simplified)
+          iges += '1H,,1H;,11HProShot.igs,19HProShot 3D Builder,32,38,6,308,15,'.padEnd(72) + 'G      1\\n';
+
+          // Parameter section - vertices as points (type 116)
+          let pLine = 1;
+          let dLine = 1;
+          let dirSection = '';
+          let paramSection = '';
+
+          for (let i = 0; i < vertices.length; i += 3) {
+              const x = (vertices[i] * scale).toFixed(precision);
+              const y = (vertices[i + 1] * scale).toFixed(precision);
+              const z = (vertices[i + 2] * scale).toFixed(precision);
+
+              dirSection += ('     116' + String(pLine).padStart(8) + '       1       0       0       0       0       0       0').slice(0, 72) + 'D' + String(dLine++).padStart(7) + '\\n';
+              dirSection += ('       0       0       0       1       0                        0 0').slice(0, 72) + 'D' + String(dLine++).padStart(7) + '\\n';
+              paramSection += ('116,' + x + ',' + y + ',' + z + ';').padEnd(72) + 'P' + String(pLine++).padStart(7) + '\\n';
+          }
+
+          // Terminate section
+          const termLine = 'S      2G      1D' + String(dLine - 1).padStart(7) + 'P' + String(pLine - 1).padStart(7);
+
+          return iges + dirSection + paramSection + termLine.padEnd(72) + 'T      1\\n';
+      }
+
+      function generateDXFContent(vertices, indices, precision, units, projection) {
+          const scale = units === 'inch' ? 1 / 25.4 : 1;
+
+          let dxf = '0\\nSECTION\\n2\\nHEADER\\n9\\n$ACADVER\\n1\\nAC1015\\n0\\nENDSEC\\n';
+          dxf += '0\\nSECTION\\n2\\nENTITIES\\n';
+
+          // Project vertices to 2D and draw edges
+          const getCoords = (x, y, z) => {
+              if (projection === '2d-xz') return [x * scale, z * scale];
+              if (projection === '2d-yz') return [y * scale, z * scale];
+              return [x * scale, y * scale]; // 2d-xy default
+          };
+
+          for (let i = 0; i < indices.length; i += 3) {
+              const i0 = indices[i] * 3;
+              const i1 = indices[i + 1] * 3;
+              const i2 = indices[i + 2] * 3;
+
+              const p = [
+                  getCoords(vertices[i0], vertices[i0 + 1], vertices[i0 + 2]),
+                  getCoords(vertices[i1], vertices[i1 + 1], vertices[i1 + 2]),
+                  getCoords(vertices[i2], vertices[i2 + 1], vertices[i2 + 2])
+              ];
+
+              // Draw triangle edges
+              for (let j = 0; j < 3; j++) {
+                  const p1 = p[j], p2 = p[(j + 1) % 3];
+                  dxf += '0\\nLINE\\n8\\n0\\n';
+                  dxf += '10\\n' + p1[0].toFixed(precision) + '\\n20\\n' + p1[1].toFixed(precision) + '\\n30\\n0\\n';
+                  dxf += '11\\n' + p2[0].toFixed(precision) + '\\n21\\n' + p2[1].toFixed(precision) + '\\n31\\n0\\n';
+              }
+          }
+
+          dxf += '0\\nENDSEC\\n0\\nEOF\\n';
+          return dxf;
+      }
+
+      function generatePLYContent(vertices, indices, precision, units) {
+          const scale = units === 'inch' ? 1 / 25.4 : 1;
+          const vertexCount = vertices.length / 3;
+          const faceCount = indices.length / 3;
+
+          let ply = 'ply\\nformat ascii 1.0\\n';
+          ply += 'comment ProShot 3D Builder Export\\n';
+          ply += 'element vertex ' + vertexCount + '\\n';
+          ply += 'property float x\\nproperty float y\\nproperty float z\\n';
+          ply += 'element face ' + faceCount + '\\n';
+          ply += 'property list uchar int vertex_indices\\nend_header\\n';
+
+          for (let i = 0; i < vertices.length; i += 3) {
+              ply += (vertices[i] * scale).toFixed(precision) + ' ';
+              ply += (vertices[i + 1] * scale).toFixed(precision) + ' ';
+              ply += (vertices[i + 2] * scale).toFixed(precision) + '\\n';
+          }
+
+          for (let i = 0; i < indices.length; i += 3) {
+              ply += '3 ' + indices[i] + ' ' + indices[i + 1] + ' ' + indices[i + 2] + '\\n';
+          }
+
+          return ply;
+      }
+
+      function generateOBJCADContent(vertices, indices, precision, units) {
+          const scale = units === 'inch' ? 1 / 25.4 : 1;
+
+          let obj = '# ProShot 3D Builder CAD Export\\n';
+          obj += '# Units: ' + units + '\\n\\n';
+
+          for (let i = 0; i < vertices.length; i += 3) {
+              obj += 'v ' + (vertices[i] * scale).toFixed(precision) + ' ';
+              obj += (vertices[i + 1] * scale).toFixed(precision) + ' ';
+              obj += (vertices[i + 2] * scale).toFixed(precision) + '\\n';
+          }
+
+          obj += '\\n';
+          for (let i = 0; i < indices.length; i += 3) {
+              obj += 'f ' + (indices[i] + 1) + ' ' + (indices[i + 1] + 1) + ' ' + (indices[i + 2] + 1) + '\\n';
+          }
+
+          return obj;
       }
 
       function downloadBlob(blob, filename) {
@@ -581,33 +891,258 @@ export const injectDriverScript = (html: string) => {
           }
       }
 
-      function extrudeSketch(points, height) {
-          if (!points || points.length < 3) return;
-          const shape = new THREE.Shape();
-          
-          // Scale factor (canvas is 20x20, let's map roughly to world units)
-          const scale = 1.0; 
-          
-          shape.moveTo(points[0].x * scale, points[0].y * scale);
-          for (let i = 1; i < points.length; i++) shape.lineTo(points[i].x * scale, points[i].y * scale);
-          shape.closePath();
-          
-          const geometry = new THREE.ExtrudeGeometry(shape, { steps: 1, depth: height, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2 });
-          geometry.rotateX(Math.PI / 2); // Flip to lay flat
-          geometry.center();
-          
-          const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3 }));
-          mesh.name = "Extruded_Shape";
-          mesh.position.y = height / 2;
-          
-          window.scene.add(mesh);
-          selectObjects([mesh.uuid]);
+      // --- TEXTURE APPLICATION ---
+      function applyTexture(config, commandId) {
+          if (selectedIds.length === 0) {
+              if (commandId) acknowledgeCommand(commandId, 'applyTexture', false, { error: 'No object selected' });
+              return;
+          }
+
+          const obj = getObjectById(selectedIds[0]);
+          if (!obj || !obj.material) {
+              if (commandId) acknowledgeCommand(commandId, 'applyTexture', false, { error: 'Selected object has no material' });
+              return;
+          }
+
+          try {
+              const textureLoader = new THREE.TextureLoader();
+
+              // Ensure geometry has UV coordinates
+              if (obj.geometry && !obj.geometry.attributes.uv) {
+                  console.log('[Texture] Generating box UV coordinates...');
+                  generateBoxUV(obj.geometry);
+              }
+
+              // Load diffuse/color map
+              if (config.diffuseMap) {
+                  textureLoader.load(config.diffuseMap, (texture) => {
+                      texture.wrapS = THREE.RepeatWrapping;
+                      texture.wrapT = THREE.RepeatWrapping;
+                      texture.repeat.set(config.repeatX || 1, config.repeatY || 1);
+                      texture.rotation = (config.rotation || 0) * Math.PI / 180;
+                      texture.center.set(0.5, 0.5);
+                      texture.needsUpdate = true;
+
+                      obj.material.map = texture;
+                      obj.material.needsUpdate = true;
+
+                      console.log('[Texture] Diffuse map applied');
+                      broadcastSceneGraph();
+                  }, undefined, (err) => {
+                      console.error('[Texture] Failed to load diffuse map:', err);
+                  });
+              }
+
+              // Load normal map
+              if (config.normalMap) {
+                  textureLoader.load(config.normalMap, (texture) => {
+                      texture.wrapS = THREE.RepeatWrapping;
+                      texture.wrapT = THREE.RepeatWrapping;
+                      texture.repeat.set(config.repeatX || 1, config.repeatY || 1);
+                      texture.rotation = (config.rotation || 0) * Math.PI / 180;
+                      texture.center.set(0.5, 0.5);
+
+                      obj.material.normalMap = texture;
+                      obj.material.normalScale = new THREE.Vector2(1, 1);
+                      obj.material.needsUpdate = true;
+
+                      console.log('[Texture] Normal map applied');
+                  });
+              }
+
+              // Load roughness map
+              if (config.roughnessMap) {
+                  textureLoader.load(config.roughnessMap, (texture) => {
+                      texture.wrapS = THREE.RepeatWrapping;
+                      texture.wrapT = THREE.RepeatWrapping;
+                      texture.repeat.set(config.repeatX || 1, config.repeatY || 1);
+
+                      obj.material.roughnessMap = texture;
+                      obj.material.needsUpdate = true;
+
+                      console.log('[Texture] Roughness map applied');
+                  });
+              }
+
+              // Load metalness map
+              if (config.metalnessMap) {
+                  textureLoader.load(config.metalnessMap, (texture) => {
+                      texture.wrapS = THREE.RepeatWrapping;
+                      texture.wrapT = THREE.RepeatWrapping;
+                      texture.repeat.set(config.repeatX || 1, config.repeatY || 1);
+
+                      obj.material.metalnessMap = texture;
+                      obj.material.needsUpdate = true;
+
+                      console.log('[Texture] Metalness map applied');
+                  });
+              }
+
+              // Load AO map
+              if (config.aoMap) {
+                  textureLoader.load(config.aoMap, (texture) => {
+                      texture.wrapS = THREE.RepeatWrapping;
+                      texture.wrapT = THREE.RepeatWrapping;
+                      texture.repeat.set(config.repeatX || 1, config.repeatY || 1);
+
+                      obj.material.aoMap = texture;
+                      obj.material.aoMapIntensity = 1.0;
+                      obj.material.needsUpdate = true;
+
+                      console.log('[Texture] AO map applied');
+                  });
+              }
+
+              if (commandId) acknowledgeCommand(commandId, 'applyTexture', true);
+
+          } catch (e) {
+              console.error('[Texture] Application error:', e);
+              if (commandId) acknowledgeCommand(commandId, 'applyTexture', false, { error: e.message });
+          }
+      }
+
+      // Remove texture from selected object
+      function removeTexture(commandId) {
+          if (selectedIds.length === 0) {
+              if (commandId) acknowledgeCommand(commandId, 'removeTexture', false, { error: 'No object selected' });
+              return;
+          }
+
+          const obj = getObjectById(selectedIds[0]);
+          if (!obj || !obj.material) {
+              if (commandId) acknowledgeCommand(commandId, 'removeTexture', false, { error: 'Selected object has no material' });
+              return;
+          }
+
+          try {
+              // Dispose and remove all texture maps
+              if (obj.material.map) { obj.material.map.dispose(); obj.material.map = null; }
+              if (obj.material.normalMap) { obj.material.normalMap.dispose(); obj.material.normalMap = null; }
+              if (obj.material.roughnessMap) { obj.material.roughnessMap.dispose(); obj.material.roughnessMap = null; }
+              if (obj.material.metalnessMap) { obj.material.metalnessMap.dispose(); obj.material.metalnessMap = null; }
+              if (obj.material.aoMap) { obj.material.aoMap.dispose(); obj.material.aoMap = null; }
+
+              obj.material.needsUpdate = true;
+              broadcastSceneGraph();
+
+              console.log('[Texture] All textures removed');
+              if (commandId) acknowledgeCommand(commandId, 'removeTexture', true);
+
+          } catch (e) {
+              console.error('[Texture] Removal error:', e);
+              if (commandId) acknowledgeCommand(commandId, 'removeTexture', false, { error: e.message });
+          }
+      }
+
+      // Generate box UV coordinates for geometries that don't have them
+      function generateBoxUV(geometry) {
+          if (!geometry.attributes.position) return;
+
+          const positions = geometry.attributes.position.array;
+          const uvs = new Float32Array((positions.length / 3) * 2);
+
+          // Calculate bounding box
+          geometry.computeBoundingBox();
+          const box = geometry.boundingBox;
+          const size = new THREE.Vector3();
+          box.getSize(size);
+
+          // Generate UVs using box projection
+          for (let i = 0; i < positions.length; i += 3) {
+              const x = positions[i];
+              const y = positions[i + 1];
+              const z = positions[i + 2];
+
+              const uvIndex = (i / 3) * 2;
+
+              // Simple planar projection based on position
+              // Uses XZ plane for horizontal surfaces, XY for vertical
+              const nx = (x - box.min.x) / (size.x || 1);
+              const ny = (y - box.min.y) / (size.y || 1);
+              const nz = (z - box.min.z) / (size.z || 1);
+
+              // Choose UV based on dominant axis (simplified approach)
+              uvs[uvIndex] = nx;
+              uvs[uvIndex + 1] = ny;
+          }
+
+          geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+          console.log('[UV] Generated box UV coordinates for geometry');
+      }
+
+      // Update texture repeat/rotation without reloading
+      function updateTextureTransform(config, commandId) {
+          if (selectedIds.length === 0) {
+              if (commandId) acknowledgeCommand(commandId, 'updateTextureTransform', false, { error: 'No object selected' });
+              return;
+          }
+
+          const obj = getObjectById(selectedIds[0]);
+          if (!obj || !obj.material) {
+              if (commandId) acknowledgeCommand(commandId, 'updateTextureTransform', false, { error: 'No material' });
+              return;
+          }
+
+          try {
+              const maps = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap'];
+
+              maps.forEach(mapName => {
+                  const texture = obj.material[mapName];
+                  if (texture) {
+                      texture.repeat.set(config.repeatX || 1, config.repeatY || 1);
+                      texture.rotation = (config.rotation || 0) * Math.PI / 180;
+                      texture.needsUpdate = true;
+                  }
+              });
+
+              obj.material.needsUpdate = true;
+              if (commandId) acknowledgeCommand(commandId, 'updateTextureTransform', true);
+
+          } catch (e) {
+              if (commandId) acknowledgeCommand(commandId, 'updateTextureTransform', false, { error: e.message });
+          }
+      }
+
+      function extrudeSketch(points, height, commandId) {
+          if (!points || points.length < 3) {
+              if (commandId) acknowledgeCommand(commandId, 'extrudeSketch', false, { error: 'Need at least 3 points' });
+              return;
+          }
+          try {
+              const shape = new THREE.Shape();
+
+              // Scale factor (canvas is 20x20, let's map roughly to world units)
+              const scale = 1.0;
+
+              shape.moveTo(points[0].x * scale, points[0].y * scale);
+              for (let i = 1; i < points.length; i++) shape.lineTo(points[i].x * scale, points[i].y * scale);
+              shape.closePath();
+
+              const geometry = new THREE.ExtrudeGeometry(shape, { steps: 1, depth: height, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2 });
+              geometry.rotateX(Math.PI / 2); // Flip to lay flat
+              geometry.center();
+
+              const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3 }));
+              mesh.name = "Extruded_Shape";
+              mesh.position.y = height / 2;
+
+              window.scene.add(mesh);
+              selectObjects([mesh.uuid], 'extrudeSketch');
+
+              if (commandId) acknowledgeCommand(commandId, 'extrudeSketch', true, { objectId: mesh.uuid, objectName: mesh.name });
+          } catch(e) {
+              console.warn('[Driver] extrudeSketch error:', e.message);
+              if (commandId) acknowledgeCommand(commandId, 'extrudeSketch', false, { error: e.message });
+          }
       }
 
       // --- MAIN MESSAGE LISTENER ---
       window.addEventListener('message', (event) => {
           const d = event.data;
           if (!d) return;
+
+          // Extract command ID for acknowledgment pattern
+          const commandId = d.commandId;
 
           switch(d.type) {
               // 1. Parameter Sync (React -> Three.js)
@@ -616,28 +1151,313 @@ export const injectDriverScript = (html: string) => {
                   if (ctrl) {
                       ctrl.object[ctrl.property] = d.value;
                       if (ctrl.onChangeCallback) ctrl.onChangeCallback(d.value);
-                      
+
                       // Also support generic global if used
                       if (window.params) window.params[d.name] = d.value;
                       if (window.regenerate) window.regenerate();
                   }
+                  // Acknowledge parameter update
+                  if (commandId) acknowledgeCommand(commandId, 'updateParam', true, { name: d.name, value: d.value });
                   break;
 
               // 2. Modeling Operations
-              case 'addPrimitive': addPrimitive(d.primType); break;
-              case 'performBoolean': performBoolean(d.op, d.targetId, d.toolId); break;
-              case 'updateMaterial': updateMaterial(d.config); break;
-              case 'extrudeSketch': extrudeSketch(d.points, d.height); break;
-              case 'repairMesh': 
-                  if(selectedIds.length && getObjectById(selectedIds[0]).geometry) {
-                      const geo = BufferGeometryUtils.mergeVertices(getObjectById(selectedIds[0]).geometry);
-                      geo.computeVertexNormals();
-                      getObjectById(selectedIds[0]).geometry = geo;
+              case 'addPrimitive':
+                  addPrimitive(d.primType, commandId);
+                  break;
+              case 'performBoolean':
+                  performBoolean(d.op, d.targetId, d.toolId, commandId);
+                  break;
+              case 'updateMaterial':
+                  updateMaterial(d.config);
+                  broadcastSceneGraph(); // Immediate sync after material change
+                  if (commandId) acknowledgeCommand(commandId, 'updateMaterial', true);
+                  break;
+              case 'applyTexture':
+                  applyTexture(d.config, commandId);
+                  break;
+              case 'removeTexture':
+                  removeTexture(commandId);
+                  break;
+              case 'updateTextureTransform':
+                  updateTextureTransform(d.config, commandId);
+                  break;
+              case 'extrudeSketch':
+                  extrudeSketch(d.points, d.height, commandId);
+                  break;
+              case 'repairMesh':
+                  try {
+                      if(selectedIds.length && getObjectById(selectedIds[0]).geometry) {
+                          const geo = BufferGeometryUtils.mergeVertices(getObjectById(selectedIds[0]).geometry);
+                          geo.computeVertexNormals();
+                          getObjectById(selectedIds[0]).geometry = geo;
+                          broadcastSceneGraph(); // Immediate sync after repair
+                          if (commandId) acknowledgeCommand(commandId, 'repairMesh', true);
+                      } else {
+                          if (commandId) acknowledgeCommand(commandId, 'repairMesh', false, { error: 'No mesh selected' });
+                      }
+                  } catch(e) {
+                      if (commandId) acknowledgeCommand(commandId, 'repairMesh', false, { error: e.message });
                   }
                   break;
-              
+
               // 3. Selection & View
-              case 'selectObject': selectObjects(d.objectId ? [d.objectId] : []); break;
+              case 'selectObject':
+                  selectObjects(d.objectId ? [d.objectId] : [], 'command');
+                  if (commandId) acknowledgeCommand(commandId, 'selectObject', true, { selectedIds: d.objectId ? [d.objectId] : [] });
+                  break;
+
+              case 'setScale':
+                  try {
+                      // Scale selected objects (or all editable meshes if none selected)
+                      const meshesToScale = selectedIds.length > 0
+                          ? selectedIds.map(id => window.scene?.getObjectByProperty('uuid', id)).filter(Boolean)
+                          : window.scene?.children.filter(obj => obj.isMesh && !obj.name.includes('grid') && !obj.name.includes('helper')) || [];
+
+                      meshesToScale.forEach(obj => {
+                          if (!obj || !obj.scale) return;
+
+                          if (d.uniform) {
+                              // Uniform scale
+                              const factor = d.factor || 1;
+                              obj.scale.multiplyScalar(factor);
+                          } else {
+                              // Non-uniform scale
+                              obj.scale.x *= (d.x || 1);
+                              obj.scale.y *= (d.y || 1);
+                              obj.scale.z *= (d.z || 1);
+                          }
+
+                          // Update bounding box and recompute geometry bounds
+                          if (obj.geometry) {
+                              obj.geometry.computeBoundingBox();
+                              obj.geometry.computeBoundingSphere();
+                          }
+                      });
+
+                      // Notify parent about updated specs
+                      if (meshesToScale.length > 0) {
+                          const box = new THREE.Box3();
+                          meshesToScale.forEach(m => box.expandByObject(m));
+                          const size = new THREE.Vector3();
+                          box.getSize(size);
+
+                          window.parent.postMessage({
+                              type: 'specsUpdate',
+                              specs: {
+                                  width: size.x,
+                                  height: size.y,
+                                  depth: size.z
+                              }
+                          }, '*');
+                      }
+
+                      if (commandId) acknowledgeCommand(commandId, 'setScale', true, { scaledCount: meshesToScale.length });
+                  } catch(e) {
+                      console.error('[Driver] setScale error:', e);
+                      if (commandId) acknowledgeCommand(commandId, 'setScale', false, { error: e.message });
+                  }
+                  break;
+
+              // Animation Preset Handler
+              case 'applyAnimation':
+                  try {
+                      const presetId = d.presetId;
+                      const speed = d.speed || 1;
+                      const duration = d.duration || 4;
+                      const loop = d.loop !== false;
+
+                      // Store animation state globally
+                      window._animationState = window._animationState || {};
+
+                      if (d.action === 'stop') {
+                          // Stop all animations
+                          window._animationState.active = false;
+                          window._animationState.presetId = null;
+                          if (commandId) acknowledgeCommand(commandId, 'applyAnimation', true, { stopped: true });
+                          break;
+                      }
+
+                      // Get target objects
+                      const animTargets = selectedIds.length > 0
+                          ? selectedIds.map(id => window.scene?.getObjectByProperty('uuid', id)).filter(Boolean)
+                          : window.scene?.children.filter(obj => obj.isMesh && !obj.name.includes('grid') && !obj.name.includes('helper')) || [];
+
+                      if (animTargets.length === 0) {
+                          if (commandId) acknowledgeCommand(commandId, 'applyAnimation', false, { error: 'No objects to animate' });
+                          break;
+                      }
+
+                      // Store original transforms for reset
+                      animTargets.forEach(obj => {
+                          if (!obj._originalTransform) {
+                              obj._originalTransform = {
+                                  position: obj.position.clone(),
+                                  rotation: obj.rotation.clone(),
+                                  scale: obj.scale.clone()
+                              };
+                          }
+                      });
+
+                      // Animation configurations
+                      const animConfigs = {
+                          'spin-y': (obj, t) => { obj.rotation.y = t * Math.PI * 2; },
+                          'spin-x': (obj, t) => { obj.rotation.x = t * Math.PI * 2; },
+                          'wobble': (obj, t) => { obj.rotation.z = Math.sin(t * Math.PI * 4) * 0.1; },
+                          'tumble': (obj, t) => { obj.rotation.set(t * Math.PI * 2, t * Math.PI * 2 * 1.3, t * Math.PI * 2 * 0.7); },
+                          'bounce': (obj, t, orig) => { obj.position.y = orig.position.y + Math.abs(Math.sin(t * Math.PI * 2)) * 0.5; },
+                          'float': (obj, t, orig) => { obj.position.y = orig.position.y + Math.sin(t * Math.PI * 2) * 0.2; },
+                          'sway': (obj, t, orig) => { obj.position.x = orig.position.x + Math.sin(t * Math.PI * 2) * 0.3; },
+                          'orbit': (obj, t, orig, i) => {
+                              const angle = t * Math.PI * 2 + (i * Math.PI * 0.5);
+                              const radius = 2;
+                              obj.position.x = Math.cos(angle) * radius;
+                              obj.position.z = Math.sin(angle) * radius;
+                          },
+                          'pulse': (obj, t) => { const s = 1 + Math.sin(t * Math.PI * 2) * 0.05; obj.scale.setScalar(s); },
+                          'breathe': (obj, t) => { const s = 0.95 + Math.sin(t * Math.PI * 2) * 0.05; obj.scale.setScalar(s); },
+                          'pop-in': (obj, t) => {
+                              const eased = t < 1 ? 1 - Math.pow(1 - t, 3) : 1;
+                              const overshoot = t < 1 ? 1 + Math.sin(t * Math.PI) * 0.2 : 1;
+                              obj.scale.setScalar(eased * overshoot);
+                          },
+                          'squash-stretch': (obj, t, orig) => {
+                              const squeeze = Math.sin(t * Math.PI * 4);
+                              obj.scale.y = orig.scale.y * (1 + squeeze * 0.2);
+                              obj.scale.x = orig.scale.x * (1 - squeeze * 0.1);
+                              obj.scale.z = orig.scale.z * (1 - squeeze * 0.1);
+                          },
+                          'shake': (obj, t, orig) => {
+                              obj.position.x = orig.position.x + (Math.random() - 0.5) * 0.05;
+                              obj.position.y = orig.position.y + (Math.random() - 0.5) * 0.05;
+                          },
+                          'fade-pulse': (obj, t) => {
+                              if (obj.material) {
+                                  obj.material.transparent = true;
+                                  obj.material.opacity = 0.3 + Math.sin(t * Math.PI * 2) * 0.35 + 0.35;
+                              }
+                          },
+                          'glow': (obj, t) => {
+                              if (obj.material) {
+                                  const intensity = 0.5 + Math.sin(t * Math.PI * 2) * 0.5;
+                                  obj.material.emissiveIntensity = intensity;
+                              }
+                          }
+                      };
+
+                      // Set animation state
+                      window._animationState = {
+                          active: true,
+                          presetId,
+                          speed,
+                          duration: duration * 1000,
+                          loop,
+                          startTime: performance.now(),
+                          targets: animTargets,
+                          config: animConfigs[presetId]
+                      };
+
+                      // Animation loop
+                      const animateLoop = () => {
+                          if (!window._animationState?.active) return;
+
+                          const elapsed = performance.now() - window._animationState.startTime;
+                          let t = (elapsed * window._animationState.speed) / window._animationState.duration;
+
+                          if (!window._animationState.loop && t >= 1) {
+                              t = 1;
+                              window._animationState.active = false;
+                          } else {
+                              t = t % 1;
+                          }
+
+                          const cfg = window._animationState.config;
+                          if (cfg) {
+                              window._animationState.targets.forEach((obj, i) => {
+                                  cfg(obj, t, obj._originalTransform, i);
+                              });
+                          }
+
+                          if (window._animationState.active) {
+                              requestAnimationFrame(animateLoop);
+                          }
+                      };
+
+                      animateLoop();
+
+                      if (commandId) acknowledgeCommand(commandId, 'applyAnimation', true, { presetId, targetCount: animTargets.length });
+                  } catch(e) {
+                      console.error('[Driver] applyAnimation error:', e);
+                      if (commandId) acknowledgeCommand(commandId, 'applyAnimation', false, { error: e.message });
+                  }
+                  break;
+
+              case 'resetAnimation':
+                  try {
+                      // Stop animation
+                      if (window._animationState) {
+                          window._animationState.active = false;
+                      }
+
+                      // Reset transforms
+                      window.scene?.traverse(obj => {
+                          if (obj._originalTransform) {
+                              obj.position.copy(obj._originalTransform.position);
+                              obj.rotation.copy(obj._originalTransform.rotation);
+                              obj.scale.copy(obj._originalTransform.scale);
+                              if (obj.material) {
+                                  obj.material.opacity = 1;
+                                  obj.material.transparent = false;
+                              }
+                              delete obj._originalTransform;
+                          }
+                      });
+
+                      if (commandId) acknowledgeCommand(commandId, 'resetAnimation', true, {});
+                  } catch(e) {
+                      console.error('[Driver] resetAnimation error:', e);
+                      if (commandId) acknowledgeCommand(commandId, 'resetAnimation', false, { error: e.message });
+                  }
+                  break;
+
+              // Base Mesh Spawning (code received from service)
+              case 'spawnBaseMesh':
+                  try {
+                      const code = d.code;
+                      if (!code) {
+                          if (commandId) acknowledgeCommand(commandId, 'spawnBaseMesh', false, { error: 'No mesh code provided' });
+                          break;
+                      }
+
+                      // Execute the mesh generation code
+                      const fn = new Function('scene', 'THREE', code);
+                      fn(window.scene, THREE);
+
+                      // Update scene graph
+                      if (window.updateSceneGraph) {
+                          window.updateSceneGraph();
+                      }
+
+                      // Compute bounds and notify parent
+                      const box = new THREE.Box3().setFromObject(window.scene);
+                      const size = new THREE.Vector3();
+                      box.getSize(size);
+
+                      window.parent.postMessage({
+                          type: 'specsUpdate',
+                          specs: {
+                              width: size.x,
+                              height: size.y,
+                              depth: size.z
+                          }
+                      }, '*');
+
+                      if (commandId) acknowledgeCommand(commandId, 'spawnBaseMesh', true, { presetId: d.presetId });
+                  } catch(e) {
+                      console.error('[Driver] spawnBaseMesh error:', e);
+                      if (commandId) acknowledgeCommand(commandId, 'spawnBaseMesh', false, { error: e.message });
+                  }
+                  break;
+
               case 'setGizmoMode':
                   try {
                       if (transformControl) {

@@ -1,5 +1,6 @@
 
 import React, { useCallback, useState } from 'react';
+import { compressImages, formatBytes, CompressionResult } from '../services/imageCompressionService';
 
 interface ImageUploadProps {
   onImagesChange: (base64s: string[]) => void;
@@ -7,53 +8,87 @@ interface ImageUploadProps {
   compact?: boolean;
 }
 
+interface CompressionStats {
+  totalOriginalSize: number;
+  totalCompressedSize: number;
+  averageReduction: number;
+}
+
 export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, selectedImages, compact = false }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [compressionProgress, setCompressionProgress] = useState({ completed: 0, total: 0 });
+  const [lastCompressionStats, setLastCompressionStats] = useState<CompressionStats | null>(null);
 
-  const processFiles = (files: FileList | null) => {
+  const processFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
     const newImages: string[] = [];
     let processedCount = 0;
     const totalFiles = files.length;
 
-    Array.from(files).forEach((file) => {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          if (e.target?.result) {
-            newImages.push(e.target.result as string);
-          }
-          processedCount++;
-          
-          // Only trigger when ALL files in the batch have been processed
-          if (processedCount === totalFiles) {
-             if (newImages.length > 0) {
-                 onImagesChange([...selectedImages, ...newImages]);
-             }
-          }
-        };
-        reader.readAsDataURL(file);
-      } else {
-        // Non-image files count as processed but aren't added
-        processedCount++;
-        if (processedCount === totalFiles) {
-             if (newImages.length > 0) {
-                 onImagesChange([...selectedImages, ...newImages]);
-             }
+    // First, read all files as base64
+    const readPromises = Array.from(files).map((file) => {
+      return new Promise<string | null>((resolve) => {
+        if (file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            resolve(e.target?.result as string || null);
+          };
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(file);
+        } else {
+          resolve(null);
         }
-      }
+      });
     });
+
+    const rawImages = (await Promise.all(readPromises)).filter((img): img is string => img !== null);
+
+    if (rawImages.length === 0) return;
+
+    // Compress images
+    setIsCompressing(true);
+    setCompressionProgress({ completed: 0, total: rawImages.length });
+
+    try {
+      const result = await compressImages(rawImages, (completed, total) => {
+        setCompressionProgress({ completed, total });
+      });
+
+      // Store stats for display
+      setLastCompressionStats({
+        totalOriginalSize: result.stats.totalOriginalSize,
+        totalCompressedSize: result.stats.totalCompressedSize,
+        averageReduction: result.stats.averageReduction
+      });
+
+      // Log compression results
+      console.log(`[ImageCompression] Compressed ${rawImages.length} images:`, {
+        originalSize: formatBytes(result.stats.totalOriginalSize),
+        compressedSize: formatBytes(result.stats.totalCompressedSize),
+        reduction: `${result.stats.averageReduction.toFixed(1)}%`,
+        time: `${result.stats.processingTime.toFixed(0)}ms`
+      });
+
+      onImagesChange([...selectedImages, ...result.images]);
+    } catch (error) {
+      console.error('[ImageCompression] Failed:', error);
+      // Fallback to uncompressed images
+      onImagesChange([...selectedImages, ...rawImages]);
+    } finally {
+      setIsCompressing(false);
+    }
   };
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    processFiles(e.dataTransfer.files);
+    await processFiles(e.dataTransfer.files);
   }, [selectedImages, onImagesChange]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    processFiles(e.target.files);
+  const handleChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await processFiles(e.target.files);
     // Reset value so same files can be selected again if needed
     e.target.value = '';
   };
@@ -70,11 +105,22 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
             {!compact && <span className="w-6 h-6 rounded-full bg-slate-700 text-xs flex items-center justify-center">1</span>}
             {compact ? 'Reference Image' : 'Upload Products'}
         </h2>
-        {selectedImages.length > 0 && (
-            <span className="px-2 py-1 bg-indigo-500/20 text-indigo-300 text-[10px] rounded-full font-medium border border-indigo-500/30">
-                {selectedImages.length} {selectedImages.length === 1 ? 'img' : 'imgs'}
+        <div className="flex items-center gap-2">
+          {/* Compression stats badge */}
+          {lastCompressionStats && lastCompressionStats.averageReduction > 5 && (
+            <span
+              className="px-2 py-1 bg-emerald-500/20 text-emerald-300 text-[10px] rounded-full font-medium border border-emerald-500/30"
+              title={`Original: ${formatBytes(lastCompressionStats.totalOriginalSize)} → ${formatBytes(lastCompressionStats.totalCompressedSize)}`}
+            >
+              -{lastCompressionStats.averageReduction.toFixed(0)}% optimized
             </span>
-        )}
+          )}
+          {selectedImages.length > 0 && (
+              <span className="px-2 py-1 bg-indigo-500/20 text-indigo-300 text-[10px] rounded-full font-medium border border-indigo-500/30">
+                  {selectedImages.length} {selectedImages.length === 1 ? 'img' : 'imgs'}
+              </span>
+          )}
+        </div>
       </div>
       
       {/* Upload Area */}
@@ -104,7 +150,15 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
         />
 
         <div className="text-center pointer-events-none p-4">
-            {selectedImages.length === 0 ? (
+            {isCompressing ? (
+                <div className="flex flex-col items-center gap-2">
+                    <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-emerald-400 text-sm font-medium">
+                        Optimizing {compressionProgress.completed}/{compressionProgress.total}...
+                    </p>
+                    <p className="text-slate-500 text-xs">Compressing for faster AI analysis</p>
+                </div>
+            ) : selectedImages.length === 0 ? (
                 <>
                     <div className={`${compact ? 'w-8 h-8' : 'w-16 h-16'} rounded-full bg-slate-800 flex items-center justify-center mx-auto ${compact ? 'mb-2' : 'mb-4'} text-slate-400 group-hover:scale-110 transition-transform duration-300`}>
                     <svg className={`${compact ? 'w-4 h-4' : 'w-8 h-8'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
