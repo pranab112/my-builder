@@ -291,7 +291,7 @@ export const MovieMaker: React.FC = () => {
                         disabled={!prompt.trim()}
                         className="w-full !bg-gradient-to-r !from-purple-600 !to-indigo-600 hover:!from-purple-500"
                     >
-                        {isGenerating ? "Filming Scene..." : "Add Scene to Movie"}
+                        {isGenerating ? "MIG Filming Scene..." : "Add Scene with MIG"}
                     </Button>
                 </div>
             </div>

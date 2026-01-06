@@ -28,7 +28,7 @@ export const BuilderStatusBar: React.FC<BuilderStatusBarProps> = ({ onAutoFix })
       {/* Auto-Debug Toggle (Always visible in bottom left when code exists) */}
       {store.htmlCode && !store.showCode && (
           <div className="absolute bottom-6 left-6 z-20 flex items-center gap-3 bg-slate-900/90 p-2 pl-3 rounded-full border border-slate-700 shadow-xl backdrop-blur-md">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">AI Debug</span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">MIG Debug</span>
               <button
                   onClick={store.toggleAutoDebug}
                   className={`relative w-10 h-5 rounded-full transition-colors duration-200 focus:outline-none ${store.autoDebug ? 'bg-emerald-500' : 'bg-slate-700'}`}

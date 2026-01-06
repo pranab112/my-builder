@@ -297,7 +297,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
                      <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400">Bleeding Edge.</span>
                   </h2>
                   <p className="text-lg text-slate-400 mb-10 leading-relaxed">
-                     ProShot AI isn't just a wrapper. It's a deep integration of <strong>Google's Gemini 2.5</strong> multimodal thinking models with a high-performance <strong>WebGL</strong> rendering engine.
+                     ProShot AI is powered by <strong>MIG (Multi-modal Intelligence Generator)</strong> - a deep integration of <strong>Google's Gemini 2.5</strong> multimodal thinking models with a high-performance <strong>WebGL</strong> rendering engine.
                   </p>
                   
                   <div className="space-y-8">

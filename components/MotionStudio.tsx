@@ -568,9 +568,9 @@ export const MotionStudio: React.FC = () => {
                 disabled={!prompt.trim() && refImages.length === 0}
                 className="w-full mt-4 !bg-gradient-to-r !from-rose-600 !to-pink-600 hover:!from-rose-500 hover:!to-pink-500 !shadow-rose-500/20"
              >
-                {isGenerating 
-                   ? (htmlCode ? "Updating Scene..." : "Constructing World...") 
-                   : (htmlCode ? "Apply Changes" : "Generate Scene")
+                {isGenerating
+                   ? (htmlCode ? "MIG Updating Scene..." : "MIG Constructing World...")
+                   : (htmlCode ? "Apply Changes" : "Generate with MIG")
                 }
              </Button>
 

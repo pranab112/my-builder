@@ -385,11 +385,11 @@ export const ImageDesigner: React.FC = () => {
                         disabled={(designMode === 'single' && config.base64Images.length === 0) || (designMode === 'bulk' && bulkQueue.length === 0) || (config.mode === 'manual' && !config.prompt)}
                         className={`w-full text-lg shadow-lg ${designMode === 'bulk' ? '!bg-emerald-600 hover:!bg-emerald-500 !shadow-emerald-500/20' : ''}`}
                     >
-                        {isGenerating 
-                        ? loadingStage || "Processing..."
+                        {isGenerating
+                        ? loadingStage || "MIG Processing..."
                         : designMode === 'single'
-                            ? (config.base64Images.length > 0 ? "Generate 3 Product Views" : "Generate Product Shot")
-                            : `Process ${bulkQueue.length} Products (Stack)`
+                            ? (config.base64Images.length > 0 ? "Generate with MIG" : "Generate Product Shot")
+                            : `MIG Process ${bulkQueue.length} Products`
                         }
                     </Button>
                 )}
@@ -538,7 +538,7 @@ export const ImageDesigner: React.FC = () => {
                         <div className="flex flex-col items-center">
                             <div className={`w-24 h-24 rounded-full border-4 ${designMode === 'bulk' ? 'border-emerald-500/30 border-t-emerald-500' : 'border-indigo-500/30 border-t-indigo-500'} animate-spin mb-6`}></div>
                             <h3 className="text-xl font-semibold text-white mb-2">
-                                {designMode === 'bulk' ? 'Processing Collection...' : 'Creating Collection...'}
+                                {designMode === 'bulk' ? 'MIG Processing Collection...' : 'MIG Creating Collection...'}
                             </h3>
                             <p className={`${designMode === 'bulk' ? 'text-emerald-300' : 'text-indigo-300'} font-medium animate-pulse`}>{loadingStage}</p>
                         </div>
