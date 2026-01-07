@@ -121,13 +121,10 @@ export const BuilderInputPanel: React.FC<BuilderInputPanelProps> = ({ onGenerate
         </div>
       </div>
 
-      <div className="mt-6 flex flex-col gap-2">
-        <div className="flex gap-3">
-          <Button onClick={handleGenerateClick} isLoading={store.isGenerating} disabled={!store.prompt.trim() && store.refImages.length === 0} className="flex-1 !bg-gradient-to-r !from-emerald-600 !to-teal-600 hover:!from-emerald-500 hover:!to-teal-500 !shadow-emerald-500/20">
-            {store.isGenerating ? (store.htmlCode ? "MIG Engineering..." : "MIG Initializing...") : (store.htmlCode ? "Update Design" : "Generate CAD Model")}
-          </Button>
-        </div>
-        <p className="text-[10px] text-slate-500 text-center">⚡ Powered by <span className="text-emerald-400 font-bold">MIG</span> - Multi-modal Intelligence Generator</p>
+      <div className="mt-6 flex gap-3">
+        <Button onClick={handleGenerateClick} isLoading={store.isGenerating} disabled={!store.prompt.trim() && store.refImages.length === 0} className="flex-1 !bg-gradient-to-r !from-emerald-600 !to-teal-600 hover:!from-emerald-500 hover:!to-teal-500 !shadow-emerald-500/20">
+          {store.isGenerating ? (store.htmlCode ? "Engineering..." : "Initializing...") : (store.htmlCode ? "Update Design" : "Generate CAD Model")}
+        </Button>
       </div>
       {store.error && <div className="mt-4 p-3 bg-red-500/10 border border-red-500/50 rounded-lg text-red-200 text-xs">{store.error}</div>}
     </div>

@@ -5,12 +5,13 @@ import { Controls } from './Controls';
 import { Button } from './Button';
 import { AspectRatio, GenerationConfig, ImageResolution } from '../types';
 import { generateEcommerceImage, generateSceneDescription, analyzeProductIdentity } from '../services/geminiService';
+import { zip, Zip } from 'fflate';
 
 interface BulkItem {
   id: string;
   originals: string[]; 
   status: 'pending' | 'analyzing' | 'rendering' | 'completed' | 'failed';
-  results: string[]; 
+  results: { url: string; label: string }[]; 
   identity?: string;
   error?: string;
 }
@@ -20,6 +21,26 @@ interface ConfirmationState {
     scene: string;
     mode: 'single' | 'bulk';
 }
+
+interface ViewOption {
+    id: string;
+    label: string;
+    description: string;
+    prompt: string;
+}
+
+const VIEW_OPTIONS: ViewOption[] = [
+    { id: 'front', label: 'Front View', description: 'Straight-on', prompt: "CAMERA: Straight-on Front View (0 degrees). COMPOSITION: Symmetrical, centered, eye-level. The product faces the camera directly. Standard catalog style." },
+    { id: 'iso_right', label: 'Iso Right', description: '3/4 Angle', prompt: "CAMERA: Isometric / 3/4 Side View (Right). COMPOSITION: Rotate the product 45 degrees to the right to show depth and dimension." },
+    { id: 'iso_left', label: 'Iso Left', description: '3/4 Angle', prompt: "CAMERA: Isometric / 3/4 Side View (Left). COMPOSITION: Rotate the product 45 degrees to the left to show depth and dimension." },
+    { id: 'side_right', label: 'Right Side', description: 'Profile', prompt: "CAMERA: Right Side Profile (90 degrees). COMPOSITION: Strictly from the right side. Silhouette focus." },
+    { id: 'side_left', label: 'Left Side', description: 'Profile', prompt: "CAMERA: Left Side Profile (-90 degrees). COMPOSITION: Strictly from the left side. Silhouette focus." },
+    { id: 'back', label: 'Back View', description: 'Rear', prompt: "CAMERA: Back View (180 degrees). COMPOSITION: Show the rear/back of the product clearly." },
+    { id: 'top', label: 'Top Down', description: 'Flat Lay', prompt: "CAMERA: Top-Down / Flat Lay (90 degrees down). COMPOSITION: Bird's eye view looking straight down. Graphic alignment." },
+    { id: 'high', label: 'High Angle', description: 'Elevated', prompt: "CAMERA: High Angle / Elevated View (30 degrees up). COMPOSITION: Looking down at the product. Ideal for showing depth, top details, and footprint." },
+    { id: 'low', label: 'Low Angle', description: 'Hero Shot', prompt: "CAMERA: Low Angle / Hero Shot. COMPOSITION: Camera placed slightly below product center, looking up. Creates a sense of scale and grandeur." },
+    { id: 'detail', label: 'Detail Shot', description: 'Close-up', prompt: "CAMERA: Macro / Close-up Detail. COMPOSITION: Focus intensely on the material texture, logo, or key feature. Shallow depth of field." },
+];
 
 export const ImageDesigner: React.FC = () => {
   const [designMode, setDesignMode] = useState<'single' | 'bulk'>('single');
@@ -31,11 +52,14 @@ export const ImageDesigner: React.FC = () => {
     resolution: '1K',
     base64Images: [],
   });
+
+  // View Selection State (Default to Top 3)
+  const [selectedViewIds, setSelectedViewIds] = useState<string[]>(['front', 'iso_right', 'high']);
   
   // Single Mode State
   const [isGenerating, setIsGenerating] = useState(false);
   const [loadingStage, setLoadingStage] = useState<string>('');
-  const [singleResults, setSingleResults] = useState<string[]>([]);
+  const [singleResults, setSingleResults] = useState<{ url: string; label: string }[]>([]);
   
   // Bulk Mode State
   const [bulkQueue, setBulkQueue] = useState<BulkItem[]>([]);
@@ -45,6 +69,10 @@ export const ImageDesigner: React.FC = () => {
   // Workflow State
   const [confirmationData, setConfirmationData] = useState<ConfirmationState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isZipping, setIsZipping] = useState(false);
+  
+  // Brand Identity
+  const [logoImage, setLogoImage] = useState<string | null>(null);
 
   const handleImagesChange = (base64s: string[]) => {
     if (designMode === 'bulk') {
@@ -87,6 +115,26 @@ export const ImageDesigner: React.FC = () => {
       setConfirmationData(null);
   };
 
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            if (ev.target?.result) {
+                setLogoImage(ev.target.result as string);
+            }
+        };
+        reader.readAsDataURL(file);
+    }
+    e.target.value = ''; // Reset input
+  };
+
+  const toggleViewSelection = (id: string) => {
+      setSelectedViewIds(prev => 
+          prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]
+      );
+  };
+
   // --- PHASE 1: ANALYSIS ---
   const handleStartAnalysis = async () => {
     if (designMode === 'single' && config.base64Images.length === 0) {
@@ -101,6 +149,11 @@ export const ImageDesigner: React.FC = () => {
     if (config.mode === 'manual' && !config.prompt.trim()) {
       setError("Please describe the scene.");
       return;
+    }
+
+    if (selectedViewIds.length === 0) {
+        setError("Please select at least one view angle.");
+        return;
     }
 
     // API Key Check
@@ -120,7 +173,7 @@ export const ImageDesigner: React.FC = () => {
         let scene = "";
 
         if (designMode === 'single') {
-            identity = await analyzeProductIdentity(config.base64Images);
+            identity = await analyzeProductIdentity(config.base64Images, logoImage || undefined);
             if (config.mode === 'manual') {
                 scene = config.prompt;
             } else {
@@ -129,7 +182,7 @@ export const ImageDesigner: React.FC = () => {
         } else {
             // Bulk: Analyze first pending item as 'Leader' to establish the collection style
             const leaderItem = bulkQueue.find(i => i.status === 'pending') || bulkQueue[0];
-            identity = await analyzeProductIdentity(leaderItem.originals);
+            identity = await analyzeProductIdentity(leaderItem.originals, logoImage || undefined);
             
             if (config.mode === 'manual') {
                 scene = config.prompt;
@@ -162,38 +215,43 @@ export const ImageDesigner: React.FC = () => {
       const { identity, scene, mode } = confirmationData;
       setConfirmationData(null); 
 
+      // Filter the VIEW_OPTIONS based on user selection to preserve order
+      const viewsToGenerate = VIEW_OPTIONS.filter(v => selectedViewIds.includes(v.id));
+
       if (mode === 'single') {
-          await executeSingle(identity, scene);
+          await executeSingle(identity, scene, viewsToGenerate);
       } else {
-          await executeBulk(scene);
+          await executeBulk(scene, viewsToGenerate);
       }
   };
 
-  const executeSingle = async (identity: string, lockedScene: string) => {
+  const executeSingle = async (identity: string, lockedScene: string, views: ViewOption[]) => {
       setSingleResults([]); 
       try {
-        setLoadingStage('Rendering 3 distinct angles...');
-        const angleVariations = [
-            "CAMERA: Straight-on Front View (0 degrees). COMPOSITION: Symmetrical, centered, eye-level. The product faces the camera directly. Standard catalog style.",
-            "CAMERA: Isometric / 3/4 Side View (45 degree rotation). COMPOSITION: Rotate the product 45 degrees to show depth.",
-            "CAMERA: Low Angle / Hero Shot. COMPOSITION: Camera placed slightly below product center, looking up. Creates a sense of scale and grandeur."
-        ];
-
+        setLoadingStage(`Rendering ${views.length} angles...`);
+        
         // Execute Sequentially for robustness in single mode too
         const results = [];
-        for (const angle of angleVariations) {
-            const res = await generateEcommerceImage(
-                config.base64Images, 
-                identity, 
-                lockedScene, 
-                angle, 
-                config.aspectRatio,
-                config.resolution
-            );
-            results.push(res);
+        for (const view of views) {
+            try {
+                const res = await generateEcommerceImage(
+                    config.base64Images, 
+                    identity, 
+                    lockedScene, 
+                    view.prompt, 
+                    config.aspectRatio,
+                    config.resolution,
+                    logoImage || undefined
+                );
+                results.push({ url: res, label: view.label });
+                setSingleResults([...results]); // Update incrementally
+            } catch (e) {
+                console.error(`Failed to generate view: ${view.label}`, e);
+                // Continue to next view even if one fails
+            }
         }
 
-        setSingleResults(results);
+        if (results.length === 0) throw new Error("All views failed to generate.");
 
         } catch (err: any) {
             setError(err.message || "Failed to generate images.");
@@ -203,18 +261,11 @@ export const ImageDesigner: React.FC = () => {
         }
   };
 
-  const executeBulk = async (masterScene: string) => {
+  const executeBulk = async (masterScene: string, views: ViewOption[]) => {
       stopBulkRef.current = false;
       setBulkProgress({ current: 0, total: bulkQueue.length });
 
       try {
-          // ALIGNMENT: Using EXACT SAME prompts as Single mode for consistency
-          const angleVariations = [
-            "CAMERA: Straight-on Front View (0 degrees). COMPOSITION: Symmetrical, centered, eye-level. The product faces the camera directly. Standard catalog style.",
-            "CAMERA: Isometric / 3/4 Side View (45 degree rotation). COMPOSITION: Rotate the product 45 degrees to show depth.",
-            "CAMERA: Low Angle / Hero Shot. COMPOSITION: Camera placed slightly below product center, looking up. Creates a sense of scale and grandeur."
-          ];
-
           for (let i = 0; i < bulkQueue.length; i++) {
               if (stopBulkRef.current) break;
 
@@ -226,26 +277,26 @@ export const ImageDesigner: React.FC = () => {
               
               try {
                   // Re-run identity analysis for EACH item to ensure Product B is not treated as Product A
-                  const itemIdentity = await analyzeProductIdentity(item.originals);
+                  const itemIdentity = await analyzeProductIdentity(item.originals, logoImage || undefined);
                   
                   updateQueueItem(i, { status: 'rendering', identity: itemIdentity });
 
                   // SEQUENTIAL EXECUTION OF ANGLES
-                  // This is slower but prevents "Deadline expired" errors from backend overload
-                  const itemResults: string[] = [];
+                  const itemResults: { url: string; label: string }[] = [];
                   
-                  for (const angle of angleVariations) {
+                  for (const view of views) {
                       if (stopBulkRef.current) break;
                       try {
                           const res = await generateEcommerceImage(
                               item.originals, 
                               itemIdentity,
                               masterScene, 
-                              angle,
+                              view.prompt,
                               config.aspectRatio,
-                              config.resolution
+                              config.resolution,
+                              logoImage || undefined
                           );
-                          itemResults.push(res);
+                          itemResults.push({ url: res, label: view.label });
                           // Partial update to show progress
                           updateQueueItem(i, { results: itemResults });
                       } catch (angleError) {
@@ -276,11 +327,6 @@ export const ImageDesigner: React.FC = () => {
   const updateQueueItem = (index: number, updates: Partial<BulkItem>) => {
       setBulkQueue(prev => {
           const newQ = [...prev];
-          // Merge results if updating results, otherwise overwrite
-          if (updates.results && newQ[index].results) {
-             // Only if we are appending, but here we are usually setting the whole array
-             // Let's just spread
-          }
           newQ[index] = { ...newQ[index], ...updates };
           return newQ;
       });
@@ -305,12 +351,57 @@ export const ImageDesigner: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const getLabelForIndex = (idx: number) => {
-    switch(idx) {
-      case 0: return "Front View";
-      case 1: return "Side View";
-      case 2: return "Hero Shot";
-      default: return `View ${idx + 1}`;
+  const handleDownloadAll = async () => {
+    const completedItems = bulkQueue.filter(i => i.status === 'completed' && i.results.length > 0);
+    if (completedItems.length === 0) return;
+
+    setIsZipping(true);
+    try {
+        const zipData: Zip = {};
+
+        completedItems.forEach((item, pIdx) => {
+             // Create a folder-like structure or just unique names
+             const prodPrefix = `Product_${pIdx + 1}`;
+             
+             item.results.forEach((res, vIdx) => {
+                 // Convert Base64 to Uint8Array for zipping
+                 const base64 = res.url.split(',')[1];
+                 const binaryString = atob(base64);
+                 const len = binaryString.length;
+                 const bytes = new Uint8Array(len);
+                 for (let i = 0; i < len; i++) {
+                     bytes[i] = binaryString.charCodeAt(i);
+                 }
+
+                 const cleanLabel = res.label.replace(/\s+/g, '');
+                 const filename = `${prodPrefix}_${cleanLabel}.png`;
+                 zipData[filename] = bytes;
+             });
+        });
+
+        zip(zipData, (err, data) => {
+            if (err) {
+                console.error(err);
+                setError("Failed to zip files");
+                setIsZipping(false);
+                return;
+            }
+            const blob = new Blob([data], { type: 'application/zip' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `ProShot-Bulk-Collection-${Date.now()}.zip`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            setIsZipping(false);
+        });
+
+    } catch (e) {
+        console.error(e);
+        setError("Error creating zip file");
+        setIsZipping(false);
     }
   };
 
@@ -359,6 +450,37 @@ export const ImageDesigner: React.FC = () => {
             )}
         </div>
 
+        {/* Brand Logo Section */}
+        <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-800 shadow-sm backdrop-blur-sm">
+            <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Brand Logo (Optional)</h3>
+                {logoImage && (
+                    <button onClick={() => setLogoImage(null)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
+                )}
+            </div>
+            
+            {!logoImage ? (
+                <label className="flex items-center gap-3 p-3 border border-dashed border-slate-700 rounded-xl cursor-pointer hover:bg-slate-800 transition-colors group">
+                    <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                    <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center group-hover:scale-110 transition-transform">
+                        <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                    </div>
+                    <span className="text-xs text-slate-500 group-hover:text-slate-300">Upload logo to guide AI analysis</span>
+                </label>
+            ) : (
+                <div className="flex items-center gap-3 p-2 bg-slate-800 rounded-xl border border-slate-700">
+                    <div className="w-10 h-10 rounded bg-white/5 p-1">
+                        <img src={logoImage} className="w-full h-full object-contain" alt="Logo" />
+                    </div>
+                    <div className="flex-1">
+                        <p className="text-xs text-white font-medium">Logo Uploaded</p>
+                        <p className="text-[10px] text-slate-500">AI will use this for brand context</p>
+                    </div>
+                </div>
+            )}
+        </div>
+
+        {/* CONTROLS */}
         <div className="bg-slate-900/50 p-6 rounded-3xl border border-slate-800 shadow-xl backdrop-blur-sm flex-1">
             <Controls 
                 prompt={config.prompt}
@@ -373,7 +495,39 @@ export const ImageDesigner: React.FC = () => {
                 isGenerating={isGenerating}
                 hasImage={designMode === 'single' ? config.base64Images.length > 0 : bulkQueue.length > 0}
             />
-              <div className="mt-8">
+
+            {/* VIEW SELECTION */}
+            <div className="mt-8 pt-6 border-t border-slate-800">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-full bg-slate-700 text-xs flex items-center justify-center">4</span>
+                        Select Views
+                    </h3>
+                    <div className="flex gap-2">
+                        <button onClick={() => setSelectedViewIds(VIEW_OPTIONS.map(v => v.id))} className="text-[10px] text-indigo-400 hover:text-indigo-300">All</button>
+                        <button onClick={() => setSelectedViewIds([])} className="text-[10px] text-slate-500 hover:text-slate-400">None</button>
+                    </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2">
+                    {VIEW_OPTIONS.map((view) => (
+                        <button
+                            key={view.id}
+                            onClick={() => toggleViewSelection(view.id)}
+                            className={`p-2 rounded-lg text-left border transition-all ${
+                                selectedViewIds.includes(view.id) 
+                                    ? 'bg-indigo-600/20 border-indigo-500 text-white' 
+                                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                            }`}
+                        >
+                            <div className="text-xs font-bold">{view.label}</div>
+                            <div className="text-[10px] opacity-70 truncate">{view.description}</div>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="mt-8">
                 {isGenerating && designMode === 'bulk' ? (
                     <Button onClick={handleStopBulk} variant="danger" className="w-full">
                         Stop Bulk Process
@@ -382,14 +536,19 @@ export const ImageDesigner: React.FC = () => {
                     <Button 
                         onClick={handleStartAnalysis}
                         isLoading={isGenerating}
-                        disabled={(designMode === 'single' && config.base64Images.length === 0) || (designMode === 'bulk' && bulkQueue.length === 0) || (config.mode === 'manual' && !config.prompt)}
+                        disabled={
+                            (designMode === 'single' && config.base64Images.length === 0) || 
+                            (designMode === 'bulk' && bulkQueue.length === 0) || 
+                            (config.mode === 'manual' && !config.prompt) ||
+                            selectedViewIds.length === 0
+                        }
                         className={`w-full text-lg shadow-lg ${designMode === 'bulk' ? '!bg-emerald-600 hover:!bg-emerald-500 !shadow-emerald-500/20' : ''}`}
                     >
-                        {isGenerating
-                        ? loadingStage || "MIG Processing..."
+                        {isGenerating 
+                        ? loadingStage || "Processing..."
                         : designMode === 'single'
-                            ? (config.base64Images.length > 0 ? "Generate with MIG" : "Generate Product Shot")
-                            : `MIG Process ${bulkQueue.length} Products`
+                            ? `Generate ${selectedViewIds.length} Views`
+                            : `Process Stack (${selectedViewIds.length} views each)`
                         }
                     </Button>
                 )}
@@ -417,14 +576,36 @@ export const ImageDesigner: React.FC = () => {
                                 {isGenerating ? `Processing: ${bulkProgress.current} / ${bulkProgress.total}` : `${bulkQueue.filter(i => i.status === 'completed').length} completed`}
                             </p>
                         </div>
-                        {isGenerating && (
-                            <div className="w-32 h-2 bg-slate-800 rounded-full overflow-hidden">
-                                <div 
-                                    className="h-full bg-emerald-500 transition-all duration-300"
-                                    style={{ width: `${(bulkProgress.current / Math.max(bulkProgress.total, 1)) * 100}%` }}
-                                ></div>
-                            </div>
-                        )}
+                        <div className="flex items-center gap-4">
+                            {isGenerating && (
+                                <div className="w-32 h-2 bg-slate-800 rounded-full overflow-hidden">
+                                    <div 
+                                        className="h-full bg-emerald-500 transition-all duration-300"
+                                        style={{ width: `${(bulkProgress.current / Math.max(bulkProgress.total, 1)) * 100}%` }}
+                                    ></div>
+                                </div>
+                            )}
+                            
+                            {bulkQueue.some(i => i.status === 'completed') && (
+                                <button 
+                                    onClick={handleDownloadAll}
+                                    disabled={isZipping || isGenerating}
+                                    className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-emerald-600 border border-slate-700 hover:border-emerald-500 rounded-lg text-sm text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed group shadow-lg"
+                                >
+                                    {isZipping ? (
+                                        <>
+                                            <svg className="animate-spin h-4 w-4 text-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                            Zipping...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <svg className="w-4 h-4 text-slate-400 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                            Download All (ZIP)
+                                        </>
+                                    )}
+                                </button>
+                            )}
+                        </div>
                     </div>
 
                     <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4 pr-2">
@@ -456,7 +637,7 @@ export const ImageDesigner: React.FC = () => {
                                         </div>
 
                                         {item.error && <p className="text-xs text-red-400 mt-1">{item.error}</p>}
-                                        {item.status === 'rendering' && <p className="text-xs text-yellow-500/70 mt-1">Generating views ({item.results.length}/3)...</p>}
+                                        {item.status === 'rendering' && <p className="text-xs text-yellow-500/70 mt-1">Generating views ({item.results.length}/{selectedViewIds.length})...</p>}
                                     </div>
                                     {!isGenerating && (
                                         <button 
@@ -471,14 +652,14 @@ export const ImageDesigner: React.FC = () => {
 
                                 {/* Results Grid */}
                                 {item.results.length > 0 && (
-                                    <div className="grid grid-cols-3 gap-3">
+                                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
                                         {item.results.map((res, rIdx) => (
                                             <div key={rIdx} className="group/res relative aspect-square bg-slate-900 rounded-xl overflow-hidden border border-slate-800">
-                                                <img src={res} className="w-full h-full object-contain" />
+                                                <img src={res.url} className="w-full h-full object-contain" />
                                                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2 opacity-0 group-hover/res:opacity-100 transition-opacity">
-                                                    <span className="text-[10px] text-white block mb-1">{getLabelForIndex(rIdx)}</span>
+                                                    <span className="text-[10px] text-white block mb-1 font-bold">{res.label}</span>
                                                     <button 
-                                                        onClick={() => handleDownload(res, `prod-${idx + 1}-view-${rIdx + 1}`)}
+                                                        onClick={() => handleDownload(res.url, `prod-${idx + 1}-${res.label}`)}
                                                         className="w-full py-1 bg-white/10 hover:bg-white/20 rounded text-[10px] text-white flex items-center justify-center gap-1 backdrop-blur-sm"
                                                     >
                                                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
@@ -504,21 +685,21 @@ export const ImageDesigner: React.FC = () => {
                             </button>
                           </div>
                     </div>
-                    <div className={`grid gap-6 ${singleResults.length === 1 ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
-                        {singleResults.map((imgUrl, idx) => (
+                    <div className="grid gap-6 grid-cols-1 md:grid-cols-2">
+                        {singleResults.map((res, idx) => (
                             <div key={idx} className="bg-slate-800 rounded-xl p-3 border border-slate-700 shadow-lg flex flex-col gap-3 animate-fade-in">
                                 <div className="flex justify-between items-center px-1">
-                                    <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wider">{getLabelForIndex(idx)}</span>
+                                    <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wider">{res.label}</span>
                                 </div>
                                 <div className="relative rounded-lg overflow-hidden bg-slate-900/50 aspect-square flex items-center justify-center border border-slate-800">
                                       <img 
-                                        src={imgUrl} 
-                                        alt={`Generated Result ${idx + 1}`} 
+                                        src={res.url} 
+                                        alt={res.label} 
                                         className="w-full h-full object-contain"
                                       />
                                 </div>
                                 <Button 
-                                    onClick={() => handleDownload(imgUrl, `view-${idx}`)} 
+                                    onClick={() => handleDownload(res.url, res.label)} 
                                     variant="primary"
                                     className="w-full py-2 text-sm"
                                 >
@@ -538,7 +719,7 @@ export const ImageDesigner: React.FC = () => {
                         <div className="flex flex-col items-center">
                             <div className={`w-24 h-24 rounded-full border-4 ${designMode === 'bulk' ? 'border-emerald-500/30 border-t-emerald-500' : 'border-indigo-500/30 border-t-indigo-500'} animate-spin mb-6`}></div>
                             <h3 className="text-xl font-semibold text-white mb-2">
-                                {designMode === 'bulk' ? 'MIG Processing Collection...' : 'MIG Creating Collection...'}
+                                {designMode === 'bulk' ? 'Processing Collection...' : 'Creating Collection...'}
                             </h3>
                             <p className={`${designMode === 'bulk' ? 'text-emerald-300' : 'text-indigo-300'} font-medium animate-pulse`}>{loadingStage}</p>
                         </div>
@@ -558,7 +739,7 @@ export const ImageDesigner: React.FC = () => {
                             <p className="text-slate-500 max-w-sm">
                                 {designMode === 'bulk' 
                                   ? "Drag multiple images for ONE product to create a group. Drag again for the next product."
-                                  : "Upload your product images. We will analyze the product identity and generate 3 professional studio angles."
+                                  : "Upload your product images. We will analyze the product identity and generate professional studio angles."
                                 }
                             </p>
                           </div>

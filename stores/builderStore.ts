@@ -5,28 +5,6 @@ import { Tab, RenderMode, GizmoMode, PrinterPreset, MaterialType, MaterialConfig
 // Helper to clamp values
 const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
 
-// Validation report type for AI-generated code
-export interface ValidationReport {
-  isValid: boolean;
-  warnings: string[];
-  errors: string[];
-  stats: {
-    linesOfCode: number;
-    complexity: 'low' | 'medium' | 'high';
-  };
-  timestamp: number;
-}
-
-// Fix attempt tracking for smart auto-fix
-export interface FixAttempt {
-  id: string;
-  timestamp: number;
-  errorBefore: string;
-  errorAfter: string | null;  // null = fix succeeded
-  fixDescription: string;
-  codeSnapshot: string;  // Code before fix (for revert)
-}
-
 const initialState = {
   prompt: '',
   htmlCode: null as string | null,
@@ -45,10 +23,7 @@ const initialState = {
   autoDebug: false, // New State
   error: null as string | null,
   runtimeError: null as string | null,
-  validationReport: null as ValidationReport | null,
-  fixAttempts: [] as FixAttempt[],
-  lastSuccessfulCode: null as string | null,  // For revert on fix failure
-
+  
   isCommandPaletteOpen: false,
   isHelpOpen: false,
 
@@ -100,10 +75,7 @@ interface BuilderState {
   autoDebug: boolean;
   error: string | null;
   runtimeError: string | null;
-  validationReport: ValidationReport | null;
-  fixAttempts: FixAttempt[];
-  lastSuccessfulCode: string | null;
-
+  
   isCommandPaletteOpen: boolean;
   isHelpOpen: boolean;
 
@@ -153,13 +125,7 @@ interface BuilderState {
   toggleAutoDebug: () => void;
   setError: (error: string | null) => void;
   setRuntimeError: (error: string | null) => void;
-  setValidationReport: (report: ValidationReport | null) => void;
-  addFixAttempt: (attempt: FixAttempt) => void;
-  updateFixAttemptResult: (id: string, errorAfter: string | null) => void;
-  clearFixAttempts: () => void;
-  setLastSuccessfulCode: (code: string | null) => void;
-  revertToLastSuccessful: () => void;
-
+  
   setCommandPaletteOpen: (open: boolean) => void;
   setHelpOpen: (open: boolean) => void;
 
@@ -282,29 +248,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   toggleAutoDebug: () => set((state) => ({ autoDebug: !state.autoDebug })),
   setError: (error) => set({ error }),
   setRuntimeError: (runtimeError) => set({ runtimeError }),
-  setValidationReport: (validationReport) => set({ validationReport }),
-  addFixAttempt: (attempt) => set((state) => ({
-    fixAttempts: [...state.fixAttempts.slice(-9), attempt]  // Keep last 10
-  })),
-  updateFixAttemptResult: (id, errorAfter) => set((state) => ({
-    fixAttempts: state.fixAttempts.map(a =>
-      a.id === id ? { ...a, errorAfter } : a
-    )
-  })),
-  clearFixAttempts: () => set({ fixAttempts: [] }),
-  setLastSuccessfulCode: (lastSuccessfulCode) => set({ lastSuccessfulCode }),
-  revertToLastSuccessful: () => set((state) => {
-    if (state.lastSuccessfulCode) {
-      return {
-        htmlCode: state.lastSuccessfulCode,
-        codeEdits: state.lastSuccessfulCode,
-        runtimeError: null,
-        error: 'Reverted to last working version'
-      };
-    }
-    return {};
-  }),
-
+  
   setCommandPaletteOpen: (isCommandPaletteOpen) => set({ isCommandPaletteOpen }),
   setHelpOpen: (isHelpOpen) => set({ isHelpOpen }),
 
