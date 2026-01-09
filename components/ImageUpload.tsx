@@ -5,9 +5,10 @@ interface ImageUploadProps {
   onImagesChange: (base64s: string[]) => void;
   selectedImages: string[];
   compact?: boolean;
+  hidePreview?: boolean;
 }
 
-export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, selectedImages, compact = false }) => {
+export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, selectedImages, compact = false, hidePreview = false }) => {
   const [isDragging, setIsDragging] = useState(false);
 
   const processFiles = (files: FileList | null) => {
@@ -65,24 +66,26 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
 
   return (
     <div className="w-full h-full flex flex-col">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className={`font-semibold text-slate-200 flex items-center gap-2 ${compact ? 'text-sm' : 'text-lg'}`}>
-            {!compact && <span className="w-6 h-6 rounded-full bg-slate-700 text-xs flex items-center justify-center">1</span>}
-            {compact ? 'Reference Image' : 'Upload Products'}
-        </h2>
-        {selectedImages.length > 0 && (
-            <span className="px-2 py-1 bg-indigo-500/20 text-indigo-300 text-[10px] rounded-full font-medium border border-indigo-500/30">
-                {selectedImages.length} {selectedImages.length === 1 ? 'img' : 'imgs'}
-            </span>
-        )}
-      </div>
+      {!hidePreview && (
+        <div className="flex items-center justify-between mb-2">
+          <h2 className={`font-semibold text-slate-200 flex items-center gap-2 ${compact ? 'text-sm' : 'text-lg'}`}>
+              {!compact && <span className="w-6 h-6 rounded-full bg-slate-700 text-xs flex items-center justify-center">1</span>}
+              {compact ? 'Reference Image' : 'Upload Products'}
+          </h2>
+          {selectedImages.length > 0 && (
+              <span className="px-2 py-1 bg-indigo-500/20 text-indigo-300 text-[10px] rounded-full font-medium border border-indigo-500/30">
+                  {selectedImages.length} {selectedImages.length === 1 ? 'img' : 'imgs'}
+              </span>
+          )}
+        </div>
+      )}
       
       {/* Upload Area */}
       <div
         className={`relative rounded-2xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center cursor-pointer overflow-hidden group
-          ${selectedImages.length > 0 
+          ${selectedImages.length > 0 && !hidePreview
             ? (compact ? 'h-24 mb-2' : 'h-32 mb-4') 
-            : (compact ? 'flex-1 min-h-[100px]' : 'flex-1 min-h-[300px]')
+            : (compact ? 'flex-1 min-h-[100px]' : 'flex-1 min-h-[150px]')
           }
           ${isDragging 
             ? 'border-indigo-500 bg-indigo-500/10' 
@@ -104,7 +107,7 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
         />
 
         <div className="text-center pointer-events-none p-4">
-            {selectedImages.length === 0 ? (
+            {selectedImages.length === 0 || hidePreview ? (
                 <>
                     <div className={`${compact ? 'w-8 h-8' : 'w-16 h-16'} rounded-full bg-slate-800 flex items-center justify-center mx-auto ${compact ? 'mb-2' : 'mb-4'} text-slate-400 group-hover:scale-110 transition-transform duration-300`}>
                     <svg className={`${compact ? 'w-4 h-4' : 'w-8 h-8'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -128,7 +131,7 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onImagesChange, select
       </div>
 
       {/* Thumbnails Grid */}
-      {selectedImages.length > 0 && (
+      {selectedImages.length > 0 && !hidePreview && (
           <div className={`grid grid-cols-3 sm:grid-cols-4 gap-2 overflow-y-auto pr-2 custom-scrollbar ${compact ? 'max-h-[100px]' : 'max-h-[300px]'}`}>
               {selectedImages.map((img, idx) => (
                   <div key={idx} className="relative group aspect-square rounded-lg border border-slate-700 bg-slate-800 overflow-hidden">

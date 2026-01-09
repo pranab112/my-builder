@@ -1,6 +1,7 @@
 
 import { backend } from './backend';
 import { WorkspaceMode } from '../components/AnimationMaker/types';
+import { LabeledImage } from '../types';
 
 // Types
 export interface CategorySuggestion {
@@ -62,42 +63,59 @@ export const fixThreeJSCode = async (code: string, error: string): Promise<strin
 
 // Ecom Designer
 
-export const analyzeProductIdentity = async (base64Images: string[], logoImage?: string): Promise<string> => {
-    if (!base64Images || base64Images.length === 0) return "A generic product";
+export const analyzeProductIdentity = async (images: (string | LabeledImage)[], brandLogos?: string[]): Promise<string> => {
+    if (!images || images.length === 0) return "A generic product";
 
     const parts: any[] = [];
+    let contextDescription = "Input Images Analysis:\n";
 
-    // Add all Product Images for better context
-    base64Images.forEach((img) => {
+    // Add Product Images
+    images.forEach((img, idx) => {
+        const isLabeled = typeof img !== 'string';
+        const data = isLabeled ? (img as LabeledImage).data : (img as string);
+        const label = isLabeled ? (img as LabeledImage).label : 'Unknown View';
+        const desc = isLabeled ? (img as LabeledImage).description : '';
+
         parts.push({
             inlineData: {
-                mimeType: getMimeType(img),
-                data: img.split(',')[1]
+                mimeType: getMimeType(data),
+                data: data.split(',')[1]
             }
         });
+        
+        const refName = `[REFERENCE IMAGE #${idx + 1}]`;
+        parts.push({ text: refName });
+        contextDescription += `${refName} is a ${label}. ${desc ? `Context: ${desc}.` : ''}\n`;
     });
 
-    // Optional Logo
-    if (logoImage) {
-         parts.push({
-            inlineData: {
-                mimeType: getMimeType(logoImage),
-                data: logoImage.split(',')[1]
-            }
-        });
-        parts.push({ text: "The last image provided is the Brand Logo. Use it to understand the brand's visual identity." });
+    // Add Brand Logos
+    if (brandLogos && brandLogos.length > 0) {
+         brandLogos.forEach((logo, index) => {
+            parts.push({
+                inlineData: {
+                    mimeType: getMimeType(logo),
+                    data: logo.split(',')[1]
+                }
+            });
+            parts.push({ text: `[BRAND ASSET #${index + 1}]` });
+         });
+         parts.push({ text: "The images labeled 'BRAND ASSET' are official logos/icons." });
     }
     
     // FORENSIC ANALYSIS PROMPT
     const analysisPrompt = `
     You are a forensic product analyst for a high-end CGI studio. 
-    Your task is to create a "Digital Twin" blueprint of the product shown in these images.
+    
+    ${contextDescription}
     
     INSTRUCTIONS:
-    1. **Invariant Visual Anchors**: Identify 3 specific geometric details that MUST NOT change (e.g. "The bezel width is exactly 2mm", "The corner radius is sharp").
-    2. **Text & Label Detection**: Transcribe ANY and ALL text visible on the product/label exactly as it appears.
-    3. **Material Physics**: Specify the exact material finish (e.g., "Anisotropic brushed aluminum", "Subsurface scattering plastic").
-    4. **Color Science**: Identify the specific color tones.
+    1. **Multi-View Synthesis**: Combine information from all reference images. 
+       - Use 'Close-up' or 'Texture' shots to define the material physics (roughness, bump, threads).
+       - Use 'Global View' or 'Full Shot' for overall geometry and proportions.
+       - Use 'Detail Shot' for specific features like buttons, stitching, or ports.
+    2. **Brand & Logo**: Detect logo placement on the product and match with provided BRAND ASSETS.
+    3. **Invariant Visual Anchors**: Identify 3 specific geometric details that MUST NOT change.
+    4. **Material Physics**: Specify the exact material finish (e.g. "100% Cotton Pique", "Anodized Aluminum").
     
     Output a dense, comprehensive description starting with "A photorealistic replica of..."
     `;
@@ -105,7 +123,6 @@ export const analyzeProductIdentity = async (base64Images: string[], logoImage?:
     parts.push({ text: analysisPrompt });
     
     // Using gemini-3-pro-preview.
-    // NOTE: Removed thinkingConfig as it can cause 500 errors when combined with image inputs in some regions/models.
     const response = await backend.ai.generateContent({
         model: 'gemini-3-pro-preview',
         contents: {
@@ -120,7 +137,8 @@ export const analyzeProductIdentity = async (base64Images: string[], logoImage?:
     return getText(response);
 };
 
-export const generateSceneDescription = async (base64Images: string[], identity: string, intent: string): Promise<string> => {
+export const generateSceneDescription = async (base64Images: (string | LabeledImage)[], identity: string, intent: string): Promise<string> => {
+    // For scene description, we mostly care about the "Global View" to understand scale/context
     const response = await backend.ai.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Product Identity: ${identity}.
@@ -135,43 +153,67 @@ export const generateSceneDescription = async (base64Images: string[], identity:
 };
 
 export const generateEcommerceImage = async (
-    base64Images: string[], 
+    images: (string | LabeledImage)[], 
     identity: string, 
     scenePrompt: string, 
     angle: string,
     aspectRatio: string,
     resolution: string,
-    logoImage?: string
+    brandLogos?: string[]
 ): Promise<string> => {
-    if (!base64Images || base64Images.length === 0) throw new Error("No source images provided");
+    if (!images || images.length === 0) throw new Error("No source images provided");
+
+    const inputParts: any[] = [];
+    let imageContext = "REFERENCE IMAGE MANIFEST:\n";
 
     // Map all uploaded images to parts with correct mime types
-    const inputParts: any[] = base64Images.map(img => ({
-        inlineData: {
-            mimeType: getMimeType(img),
-            data: img.split(',')[1]
-        }
-    }));
-    
-    // Add logo to generation context if available
-    if (logoImage) {
+    images.forEach((img, idx) => {
+        const isLabeled = typeof img !== 'string';
+        const data = isLabeled ? (img as LabeledImage).data : (img as string);
+        const label = isLabeled ? (img as LabeledImage).label : 'Reference';
+        const desc = isLabeled ? (img as LabeledImage).description : '';
+
         inputParts.push({
             inlineData: {
-                mimeType: getMimeType(logoImage),
-                data: logoImage.split(',')[1]
+                mimeType: getMimeType(data),
+                data: data.split(',')[1]
             }
         });
-        inputParts.push({ text: "REFERENCE LOGO (Must appear on product if visible in angle):" });
+        
+        const refTag = `[REF_${idx+1}]`;
+        inputParts.push({ text: refTag });
+        imageContext += `${refTag}: ${label} - ${desc || "Standard view"}.\n`;
+    });
+    
+    // Add multiple logos to generation context
+    if (brandLogos && brandLogos.length > 0) {
+        brandLogos.forEach((logo, index) => {
+            inputParts.push({
+                inlineData: {
+                    mimeType: getMimeType(logo),
+                    data: logo.split(',')[1]
+                }
+            });
+            inputParts.push({ text: `[LOGO_OPTION_${index + 1}]` });
+        });
+        inputParts.push({ text: "INSTRUCTION: Use the provided [LOGO_OPTION_X] assets for branding." });
     }
 
     const fullPrompt = `
     ROLE: Virtual Product Photographer.
     TASK: Place the EXACT product from the reference images into a new environment.
     
-    STRICT VISUAL CONSTRAINTS (DIGITAL TWIN MODE):
-    1. SUBJECT FIDELITY: You must render the specific object shown in the reference images. Do not generate a "similar" product. Do not "redesign" the product.
-    2. REFERENCE ADHERENCE: The shape, label text, logo placement, and material texture must match the reference image pixel-perfectly.
-    3. CONSISTENCY: This generation is part of a multi-angle sequence. The object's identity must remain invariant across different views.
+    ${imageContext}
+    
+    CRITICAL MULTI-VIEW SYNTHESIS INSTRUCTIONS:
+    1. **Geometry Source**: Rely EXCLUSIVELY on [Global View] images for the product's shape, silhouette, and proportions. Do not distort the shape based on close-up angles.
+    2. **Texture Source**: Rely EXCLUSIVELY on [Close-up] or [Detail Shot] images for surface details, fabric weave, grain, and material imperfections. 
+    3. **Synthesis**: Map the high-resolution texture details from the [Close-up] onto the geometry of the [Global View]. The result must have perfect material physics.
+    
+    BRANDING RULES (STRICT):
+    - **Replacement**: If a logo is visible on the reference product, you MUST replace it with the matching high-resolution [LOGO_OPTION_X] provided.
+    - **Fidelity**: Do not attempt to reconstruct the logo from the potentially blurry reference photo. Use the provided [LOGO_OPTION_X] pixels as the ground truth.
+    - **Integration**: Apply the correct perspective distortion, lighting shadows, and material properties (e.g. if the shirt is cotton, the logo should look like fabric print or embroidery; if metal, it should look etched or printed).
     
     PRODUCT DNA (Forensic Description):
     ${identity}

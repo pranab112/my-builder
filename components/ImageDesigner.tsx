@@ -3,13 +3,13 @@ import React, { useState, useRef } from 'react';
 import { ImageUpload } from './ImageUpload';
 import { Controls } from './Controls';
 import { Button } from './Button';
-import { AspectRatio, GenerationConfig, ImageResolution } from '../types';
+import { AspectRatio, GenerationConfig, ImageResolution, LabeledImage } from '../types';
 import { generateEcommerceImage, generateSceneDescription, analyzeProductIdentity } from '../services/geminiService';
 import { zip, Zip } from 'fflate';
 
 interface BulkItem {
   id: string;
-  originals: string[]; 
+  originals: LabeledImage[]; 
   status: 'pending' | 'analyzing' | 'rendering' | 'completed' | 'failed';
   results: { url: string; label: string }[]; 
   identity?: string;
@@ -42,6 +42,15 @@ const VIEW_OPTIONS: ViewOption[] = [
     { id: 'detail', label: 'Detail Shot', description: 'Close-up', prompt: "CAMERA: Macro / Close-up Detail. COMPOSITION: Focus intensely on the material texture, logo, or key feature. Shallow depth of field." },
 ];
 
+const IMAGE_TYPES = [
+    'Global View',
+    'Close-up (Texture)',
+    'Detail Shot',
+    'Scale Reference',
+    'Label/Tag',
+    'Other'
+];
+
 export const ImageDesigner: React.FC = () => {
   const [designMode, setDesignMode] = useState<'single' | 'bulk'>('single');
   
@@ -51,6 +60,7 @@ export const ImageDesigner: React.FC = () => {
     aspectRatio: AspectRatio.SQUARE,
     resolution: '1K',
     base64Images: [],
+    labeledImages: []
   });
 
   // View Selection State (Default to Top 3)
@@ -71,40 +81,91 @@ export const ImageDesigner: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isZipping, setIsZipping] = useState(false);
   
-  // Brand Identity
-  const [logoImage, setLogoImage] = useState<string | null>(null);
+  // Brand Identity (Multiple Logos)
+  const [brandLogos, setBrandLogos] = useState<string[]>([]);
 
   const handleImagesChange = (base64s: string[]) => {
-    if (designMode === 'bulk') {
-        if (base64s.length === 0) return;
-
-        const newProduct: BulkItem = {
-            id: `prod-${Date.now()}`,
-            originals: base64s,
-            status: 'pending',
-            results: []
-        };
+    // Determine which images are new by comparing with existing
+    const currentImages = config.labeledImages || [];
+    const newLabeledImages: LabeledImage[] = base64s.map((data, idx) => {
+        // Try to find if this data already exists to preserve metadata
+        const existing = currentImages.find(img => img.data === data);
+        if (existing) return existing;
         
-        setBulkQueue(prev => [...prev, newProduct]);
-        setBulkProgress(prev => ({ ...prev, total: prev.total + 1 }));
+        return {
+            id: crypto.randomUUID(),
+            data: data,
+            label: 'Global View',
+            description: ''
+        };
+    });
+
+    if (designMode === 'bulk') {
+        if (base64s.length > 0) {
+             const newItems = base64s.map(data => ({
+                id: crypto.randomUUID(),
+                data: data,
+                label: 'Global View' as const,
+                description: ''
+            }));
+            
+            const newProduct: BulkItem = {
+                id: `prod-${Date.now()}`,
+                originals: newItems, // Use LabeledImage[]
+                status: 'pending',
+                results: []
+            };
+            
+            setBulkQueue(prev => [...prev, newProduct]);
+            setBulkProgress(prev => ({ ...prev, total: prev.total + 1 }));
+        }
     } else {
-        setConfig(prev => ({ ...prev, base64Images: base64s }));
+        setConfig(prev => ({ 
+            ...prev, 
+            base64Images: base64s, // Keep purely for compat if needed
+            labeledImages: newLabeledImages 
+        }));
         setSingleResults([]);
     }
     setError(null);
   };
 
+  const updateImageMetadata = (id: string, updates: Partial<LabeledImage>) => {
+      setConfig(prev => ({
+          ...prev,
+          labeledImages: prev.labeledImages?.map(img => img.id === id ? { ...img, ...updates } : img)
+      }));
+  };
+
+  const updateBulkItemImage = (itemId: string, imgId: string, updates: Partial<LabeledImage>) => {
+      setBulkQueue(prev => prev.map(item => {
+          if (item.id !== itemId) return item;
+          return {
+              ...item,
+              originals: item.originals.map(img => img.id === imgId ? { ...img, ...updates } : img)
+          };
+      }));
+  };
+
+  const removeImage = (id: string) => {
+      setConfig(prev => ({
+          ...prev,
+          labeledImages: prev.labeledImages?.filter(img => img.id !== id),
+          base64Images: prev.base64Images.filter((_, idx) => prev.labeledImages?.[idx]?.id !== id) // Sync primitive list
+      }));
+  };
+
   const handleModeSwitch = (mode: 'single' | 'bulk') => {
-      if (mode === 'bulk' && config.base64Images.length > 0) {
+      if (mode === 'bulk' && (config.labeledImages?.length || 0) > 0) {
           const initialItem: BulkItem = {
               id: `prod-${Date.now()}`,
-              originals: config.base64Images,
+              originals: config.labeledImages || [],
               status: 'pending',
               results: []
           };
           setBulkQueue([initialItem]);
           setBulkProgress({ current: 0, total: 1 });
-          setConfig(prev => ({ ...prev, base64Images: [] })); 
+          setConfig(prev => ({ ...prev, base64Images: [], labeledImages: [] })); 
       } else if (mode === 'single') {
           setBulkQueue([]);
           setBulkProgress({ current: 0, total: 0 });
@@ -116,17 +177,23 @@ export const ImageDesigner: React.FC = () => {
   };
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-        const file = e.target.files[0];
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            if (ev.target?.result) {
-                setLogoImage(ev.target.result as string);
-            }
-        };
-        reader.readAsDataURL(file);
+    if (e.target.files) {
+        const files = Array.from(e.target.files);
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                if (ev.target?.result) {
+                    setBrandLogos(prev => [...prev, ev.target!.result as string]);
+                }
+            };
+            reader.readAsDataURL(file);
+        });
     }
     e.target.value = ''; // Reset input
+  };
+
+  const removeLogo = (index: number) => {
+      setBrandLogos(prev => prev.filter((_, i) => i !== index));
   };
 
   const toggleViewSelection = (id: string) => {
@@ -137,7 +204,7 @@ export const ImageDesigner: React.FC = () => {
 
   // --- PHASE 1: ANALYSIS ---
   const handleStartAnalysis = async () => {
-    if (designMode === 'single' && config.base64Images.length === 0) {
+    if (designMode === 'single' && (!config.labeledImages || config.labeledImages.length === 0)) {
       setError("Please upload images.");
       return;
     }
@@ -173,16 +240,16 @@ export const ImageDesigner: React.FC = () => {
         let scene = "";
 
         if (designMode === 'single') {
-            identity = await analyzeProductIdentity(config.base64Images, logoImage || undefined);
+            identity = await analyzeProductIdentity(config.labeledImages!, brandLogos);
             if (config.mode === 'manual') {
                 scene = config.prompt;
             } else {
-                scene = await generateSceneDescription(config.base64Images, identity, "Create a high-end, commercial-ready product photography scene.");
+                scene = await generateSceneDescription(config.labeledImages!, identity, "Create a high-end, commercial-ready product photography scene.");
             }
         } else {
             // Bulk: Analyze first pending item as 'Leader' to establish the collection style
             const leaderItem = bulkQueue.find(i => i.status === 'pending') || bulkQueue[0];
-            identity = await analyzeProductIdentity(leaderItem.originals, logoImage || undefined);
+            identity = await analyzeProductIdentity(leaderItem.originals, brandLogos);
             
             if (config.mode === 'manual') {
                 scene = config.prompt;
@@ -230,24 +297,22 @@ export const ImageDesigner: React.FC = () => {
       try {
         setLoadingStage(`Rendering ${views.length} angles...`);
         
-        // Execute Sequentially for robustness in single mode too
         const results = [];
         for (const view of views) {
             try {
                 const res = await generateEcommerceImage(
-                    config.base64Images, 
+                    config.labeledImages!, 
                     identity, 
                     lockedScene, 
                     view.prompt, 
                     config.aspectRatio,
                     config.resolution,
-                    logoImage || undefined
+                    brandLogos
                 );
                 results.push({ url: res, label: view.label });
                 setSingleResults([...results]); // Update incrementally
             } catch (e) {
                 console.error(`Failed to generate view: ${view.label}`, e);
-                // Continue to next view even if one fails
             }
         }
 
@@ -276,12 +341,10 @@ export const ImageDesigner: React.FC = () => {
               setBulkProgress(prev => ({ ...prev, current: i + 1 }));
               
               try {
-                  // Re-run identity analysis for EACH item to ensure Product B is not treated as Product A
-                  const itemIdentity = await analyzeProductIdentity(item.originals, logoImage || undefined);
+                  const itemIdentity = await analyzeProductIdentity(item.originals, brandLogos);
                   
                   updateQueueItem(i, { status: 'rendering', identity: itemIdentity });
 
-                  // SEQUENTIAL EXECUTION OF ANGLES
                   const itemResults: { url: string; label: string }[] = [];
                   
                   for (const view of views) {
@@ -294,14 +357,12 @@ export const ImageDesigner: React.FC = () => {
                               view.prompt,
                               config.aspectRatio,
                               config.resolution,
-                              logoImage || undefined
+                              brandLogos
                           );
                           itemResults.push({ url: res, label: view.label });
-                          // Partial update to show progress
                           updateQueueItem(i, { results: itemResults });
                       } catch (angleError) {
                           console.error("Angle failed", angleError);
-                          // Continue to next angle even if one fails
                       }
                   }
 
@@ -360,11 +421,8 @@ export const ImageDesigner: React.FC = () => {
         const zipData: Zip = {};
 
         completedItems.forEach((item, pIdx) => {
-             // Create a folder-like structure or just unique names
              const prodPrefix = `Product_${pIdx + 1}`;
-             
              item.results.forEach((res, vIdx) => {
-                 // Convert Base64 to Uint8Array for zipping
                  const base64 = res.url.split(',')[1];
                  const binaryString = atob(base64);
                  const len = binaryString.length;
@@ -372,7 +430,6 @@ export const ImageDesigner: React.FC = () => {
                  for (let i = 0; i < len; i++) {
                      bytes[i] = binaryString.charCodeAt(i);
                  }
-
                  const cleanLabel = res.label.replace(/\s+/g, '');
                  const filename = `${prodPrefix}_${cleanLabel}.png`;
                  zipData[filename] = bytes;
@@ -381,12 +438,11 @@ export const ImageDesigner: React.FC = () => {
 
         zip(zipData, (err, data) => {
             if (err) {
-                console.error(err);
                 setError("Failed to zip files");
                 setIsZipping(false);
                 return;
             }
-            const blob = new Blob([data], { type: 'application/zip' });
+            const blob = new window.Blob([data as Uint8Array], { type: 'application/zip' });
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
@@ -399,7 +455,6 @@ export const ImageDesigner: React.FC = () => {
         });
 
     } catch (e) {
-        console.error(e);
         setError("Error creating zip file");
         setIsZipping(false);
     }
@@ -429,14 +484,54 @@ export const ImageDesigner: React.FC = () => {
             </button>
         </div>
 
+        {/* IMAGE UPLOAD & TAGGING SECTION */}
         <div className="bg-slate-900/50 p-6 rounded-3xl border border-slate-800 shadow-xl backdrop-blur-sm">
-            <h3 className="text-sm font-semibold text-slate-400 mb-3 uppercase tracking-wider">
-                {designMode === 'single' ? "Upload Views" : "Add Product to Queue"}
+            <h3 className="text-sm font-semibold text-slate-400 mb-3 uppercase tracking-wider flex justify-between">
+                <span>{designMode === 'single' ? "Upload & Tag Views" : "Add Product to Queue"}</span>
+                {designMode === 'single' && config.labeledImages?.length ? <span className="text-xs text-indigo-400">{config.labeledImages.length} images</span> : null}
             </h3>
+            
             <ImageUpload 
                 onImagesChange={handleImagesChange} 
-                selectedImages={designMode === 'single' ? config.base64Images : []} 
+                selectedImages={designMode === 'single' ? config.labeledImages?.map(i => i.data) || [] : []} 
+                hidePreview={designMode === 'single'} // We handle preview manually for tagging
             />
+            
+            {/* Tagging UI for Single Mode */}
+            {designMode === 'single' && config.labeledImages && config.labeledImages.length > 0 && (
+                <div className="mt-4 space-y-3">
+                    {config.labeledImages.map((img, idx) => (
+                        <div key={img.id} className="bg-slate-800/50 p-3 rounded-xl border border-slate-700 flex gap-3 items-start animate-fade-in">
+                            <div className="w-16 h-16 rounded-lg bg-slate-900 overflow-hidden flex-shrink-0 border border-slate-700">
+                                <img src={img.data} className="w-full h-full object-cover" />
+                            </div>
+                            <div className="flex-1 space-y-2">
+                                <div className="flex justify-between items-start">
+                                    <span className="text-xs font-bold text-slate-300 bg-slate-700 px-2 py-0.5 rounded">Img {idx+1}</span>
+                                    <button onClick={() => removeImage(img.id)} className="text-slate-500 hover:text-red-400">
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                                <select 
+                                    value={img.label}
+                                    onChange={(e) => updateImageMetadata(img.id, { label: e.target.value as any })}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white focus:border-indigo-500 outline-none"
+                                >
+                                    {IMAGE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                                </select>
+                                <input 
+                                    type="text" 
+                                    placeholder="Optional description (e.g. 'Fabric detail')"
+                                    value={img.description || ''}
+                                    onChange={(e) => updateImageMetadata(img.id, { description: e.target.value })}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-300 placeholder-slate-600 focus:border-indigo-500 outline-none"
+                                />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
             {designMode === 'bulk' && (
                 <div className="mt-2 text-xs text-slate-500 text-center">
                     Drag multiple images for <strong>ONE</strong> product to create a group. <br/>
@@ -453,31 +548,38 @@ export const ImageDesigner: React.FC = () => {
         {/* Brand Logo Section */}
         <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-800 shadow-sm backdrop-blur-sm">
             <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Brand Logo (Optional)</h3>
-                {logoImage && (
-                    <button onClick={() => setLogoImage(null)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
-                )}
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Brand Assets (Optional)</h3>
+                <span className="text-[10px] text-slate-500">{brandLogos.length} uploaded</span>
             </div>
             
-            {!logoImage ? (
+            <div className="space-y-3">
                 <label className="flex items-center gap-3 p-3 border border-dashed border-slate-700 rounded-xl cursor-pointer hover:bg-slate-800 transition-colors group">
-                    <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
-                    <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center group-hover:scale-110 transition-transform">
-                        <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                    <input type="file" accept="image/*" multiple className="hidden" onChange={handleLogoUpload} />
+                    <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center group-hover:scale-110 transition-transform border border-slate-700">
+                        <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
                     </div>
-                    <span className="text-xs text-slate-500 group-hover:text-slate-300">Upload logo to guide AI analysis</span>
+                    <div>
+                        <span className="text-xs text-slate-300 font-medium group-hover:text-white block">Add Logos / Icons</span>
+                        <span className="text-[10px] text-slate-500">AI will detect & place them</span>
+                    </div>
                 </label>
-            ) : (
-                <div className="flex items-center gap-3 p-2 bg-slate-800 rounded-xl border border-slate-700">
-                    <div className="w-10 h-10 rounded bg-white/5 p-1">
-                        <img src={logoImage} className="w-full h-full object-contain" alt="Logo" />
+
+                {brandLogos.length > 0 && (
+                    <div className="grid grid-cols-4 gap-2">
+                        {brandLogos.map((logo, idx) => (
+                            <div key={idx} className="relative group aspect-square rounded-lg bg-slate-800 border border-slate-700 p-1 flex items-center justify-center">
+                                <img src={logo} className="max-w-full max-h-full object-contain" alt={`Logo ${idx}`} />
+                                <button 
+                                    onClick={() => removeLogo(idx)}
+                                    className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                                >
+                                    &times;
+                                </button>
+                            </div>
+                        ))}
                     </div>
-                    <div className="flex-1">
-                        <p className="text-xs text-white font-medium">Logo Uploaded</p>
-                        <p className="text-[10px] text-slate-500">AI will use this for brand context</p>
-                    </div>
-                </div>
-            )}
+                )}
+            </div>
         </div>
 
         {/* CONTROLS */}
@@ -493,7 +595,7 @@ export const ImageDesigner: React.FC = () => {
                 setResolution={(r) => setConfig(prev => ({ ...prev, resolution: r }))}
                 onGenerate={handleStartAnalysis}
                 isGenerating={isGenerating}
-                hasImage={designMode === 'single' ? config.base64Images.length > 0 : bulkQueue.length > 0}
+                hasImage={designMode === 'single' ? (config.labeledImages?.length || 0) > 0 : bulkQueue.length > 0}
             />
 
             {/* VIEW SELECTION */}
@@ -537,7 +639,7 @@ export const ImageDesigner: React.FC = () => {
                         onClick={handleStartAnalysis}
                         isLoading={isGenerating}
                         disabled={
-                            (designMode === 'single' && config.base64Images.length === 0) || 
+                            (designMode === 'single' && (!config.labeledImages || config.labeledImages.length === 0)) || 
                             (designMode === 'bulk' && bulkQueue.length === 0) || 
                             (config.mode === 'manual' && !config.prompt) ||
                             selectedViewIds.length === 0
@@ -627,13 +729,42 @@ export const ImageDesigner: React.FC = () => {
                                             </span>
                                         </div>
                                         
-                                        {/* Thumbnails Strip */}
-                                        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-                                            {item.originals.map((orig, i) => (
-                                                <div key={i} className="w-10 h-10 rounded bg-slate-900 border border-slate-700 overflow-hidden flex-shrink-0">
-                                                    <img src={orig} className="w-full h-full object-cover" />
-                                                </div>
-                                            ))}
+                                        {/* Source Images List (Editable) */}
+                                        <div className="flex flex-col gap-2 mt-2">
+                                            <div className="flex justify-between items-center">
+                                                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Source Images ({item.originals.length})</p>
+                                                {item.status === 'pending' && <span className="text-[10px] text-indigo-400">Editable</span>}
+                                            </div>
+                                            <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
+                                                {item.originals.map((img, i) => (
+                                                    <div key={img.id} className="flex gap-2 bg-slate-900/50 p-2 rounded-lg border border-slate-700 items-start">
+                                                        <div className="w-12 h-12 rounded bg-slate-800 overflow-hidden flex-shrink-0 border border-slate-700 group/img relative">
+                                                            <img src={img.data} className="w-full h-full object-cover" />
+                                                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity pointer-events-none">
+                                                                <span className="text-[8px] text-white">#{i+1}</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+                                                            <select 
+                                                                value={img.label}
+                                                                onChange={(e) => updateBulkItemImage(item.id, img.id, { label: e.target.value as any })}
+                                                                className="bg-slate-800 border border-slate-600 rounded text-[10px] text-white px-1 py-0.5 outline-none focus:border-indigo-500 w-full cursor-pointer hover:bg-slate-700 transition-colors"
+                                                                disabled={item.status !== 'pending'}
+                                                            >
+                                                                {IMAGE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                                                            </select>
+                                                            <input 
+                                                                type="text"
+                                                                placeholder="Add specific detail..."
+                                                                value={img.description || ''}
+                                                                onChange={(e) => updateBulkItemImage(item.id, img.id, { description: e.target.value })}
+                                                                className="bg-slate-800 border border-slate-600 rounded text-[10px] text-slate-300 px-2 py-0.5 outline-none focus:border-indigo-500 w-full placeholder-slate-600"
+                                                                disabled={item.status !== 'pending'}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
 
                                         {item.error && <p className="text-xs text-red-400 mt-1">{item.error}</p>}
@@ -652,7 +783,7 @@ export const ImageDesigner: React.FC = () => {
 
                                 {/* Results Grid */}
                                 {item.results.length > 0 && (
-                                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
+                                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 mt-2 border-t border-slate-700/50 pt-3">
                                         {item.results.map((res, rIdx) => (
                                             <div key={rIdx} className="group/res relative aspect-square bg-slate-900 rounded-xl overflow-hidden border border-slate-800">
                                                 <img src={res.url} className="w-full h-full object-contain" />
@@ -739,7 +870,7 @@ export const ImageDesigner: React.FC = () => {
                             <p className="text-slate-500 max-w-sm">
                                 {designMode === 'bulk' 
                                   ? "Drag multiple images for ONE product to create a group. Drag again for the next product."
-                                  : "Upload your product images. We will analyze the product identity and generate professional studio angles."
+                                  : "Upload your product images. Label them as Close-up, Detail, or Global View for the best AI analysis."
                                 }
                             </p>
                           </div>
