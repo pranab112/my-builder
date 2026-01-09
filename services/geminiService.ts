@@ -61,9 +61,48 @@ export const fixThreeJSCode = async (code: string, error: string): Promise<strin
     return text;
 };
 
-// Ecom Designer
+// --- ECOM DESIGNER: STAGE 1 (BRAND ANALYSIS) ---
 
-export const analyzeProductIdentity = async (images: (string | LabeledImage)[], brandLogos?: string[]): Promise<string> => {
+export const analyzeBrandAssets = async (brandLogos: string[]): Promise<string> => {
+    if (!brandLogos || brandLogos.length === 0) return "";
+
+    const parts: any[] = [];
+    brandLogos.forEach((logo, index) => {
+        parts.push({
+            inlineData: {
+                mimeType: getMimeType(logo),
+                data: logo.split(',')[1]
+            }
+        });
+        parts.push({ text: `[OFFICIAL LOGO FILE #${index + 1}]` });
+    });
+
+    const prompt = `
+    You are a Brand Compliance Officer. Analyze these official logo files.
+    
+    OUTPUT REQUIREMENTS:
+    1. Identify the exact text content (if any).
+    2. Describe the color palette (Hex codes if possible).
+    3. Describe the shape geometry (Circular, Rectangular, wordmark).
+    4. Note transparency or background details.
+    
+    Your goal is to establish the "Ground Truth" for this brand identity so it is never hallucinated later.
+    `;
+
+    parts.push({ text: prompt });
+
+    const response = await backend.ai.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: { role: 'user', parts: parts },
+        config: { temperature: 0.1 }
+    });
+
+    return getText(response);
+};
+
+// --- ECOM DESIGNER: STAGE 2 (PRODUCT STRUCTURE MAPPING) ---
+
+export const analyzeProductIdentity = async (images: (string | LabeledImage)[], brandAnalysisContext: string = ""): Promise<string> => {
     if (!images || images.length === 0) return "A generic product";
 
     const parts: any[] = [];
@@ -83,41 +122,27 @@ export const analyzeProductIdentity = async (images: (string | LabeledImage)[], 
             }
         });
         
-        const refName = `[REFERENCE IMAGE #${idx + 1}]`;
+        const refName = `[PRODUCT REFERENCE #${idx + 1}]`;
         parts.push({ text: refName });
         contextDescription += `${refName} is a ${label}. ${desc ? `Context: ${desc}.` : ''}\n`;
     });
 
-    // Add Brand Logos
-    if (brandLogos && brandLogos.length > 0) {
-         brandLogos.forEach((logo, index) => {
-            parts.push({
-                inlineData: {
-                    mimeType: getMimeType(logo),
-                    data: logo.split(',')[1]
-                }
-            });
-            parts.push({ text: `[BRAND ASSET #${index + 1}]` });
-         });
-         parts.push({ text: "The images labeled 'BRAND ASSET' are official logos/icons." });
-    }
-    
     // FORENSIC ANALYSIS PROMPT
     const analysisPrompt = `
     You are a forensic product analyst for a high-end CGI studio. 
     
     ${contextDescription}
     
-    INSTRUCTIONS:
-    1. **Multi-View Synthesis**: Combine information from all reference images. 
-       - Use 'Close-up' or 'Texture' shots to define the material physics (roughness, bump, threads).
-       - Use 'Global View' or 'Full Shot' for overall geometry and proportions.
-       - Use 'Detail Shot' for specific features like buttons, stitching, or ports.
-    2. **Brand & Logo**: Detect logo placement on the product and match with provided BRAND ASSETS.
-    3. **Invariant Visual Anchors**: Identify 3 specific geometric details that MUST NOT change.
-    4. **Material Physics**: Specify the exact material finish (e.g. "100% Cotton Pique", "Anodized Aluminum").
+    ${brandAnalysisContext ? `OFFICIAL BRAND GUIDELINES (Use this to identify logos on the product): \n${brandAnalysisContext}` : ''}
     
-    Output a dense, comprehensive description starting with "A photorealistic replica of..."
+    INSTRUCTIONS:
+    1. **Geometry & Material**: Describe the product's physical shape and material finish (e.g., "Matte Aluminum", "Heavy Cotton Jersey"). Rely on 'Global View' for shape and 'Close-up' for texture.
+    2. **Logo Mapping**: If you see a logo on the [PRODUCT REFERENCE] that matches the OFFICIAL BRAND GUIDELINES:
+       - State EXACTLY where it is located (e.g., "Centered on chest", "Bottom right corner").
+       - Describe how the material affects the logo (e.g., "Embroidered", "Screen printed", "Etched").
+    3. **Invariant Features**: List 3 geometric details that MUST NOT change to prevent hallucination.
+    
+    Output a comprehensive description starting with "A photorealistic replica of..."
     `;
 
     parts.push({ text: analysisPrompt });
@@ -151,6 +176,8 @@ export const generateSceneDescription = async (base64Images: (string | LabeledIm
     });
     return getText(response);
 };
+
+// --- ECOM DESIGNER: STAGE 3 (GENERATION) ---
 
 export const generateEcommerceImage = async (
     images: (string | LabeledImage)[], 
@@ -205,18 +232,17 @@ export const generateEcommerceImage = async (
     
     ${imageContext}
     
-    CRITICAL MULTI-VIEW SYNTHESIS INSTRUCTIONS:
-    1. **Geometry Source**: Rely EXCLUSIVELY on [Global View] images for the product's shape, silhouette, and proportions. Do not distort the shape based on close-up angles.
-    2. **Texture Source**: Rely EXCLUSIVELY on [Close-up] or [Detail Shot] images for surface details, fabric weave, grain, and material imperfections. 
-    3. **Synthesis**: Map the high-resolution texture details from the [Close-up] onto the geometry of the [Global View]. The result must have perfect material physics.
-    
-    BRANDING RULES (STRICT):
-    - **Replacement**: If a logo is visible on the reference product, you MUST replace it with the matching high-resolution [LOGO_OPTION_X] provided.
-    - **Fidelity**: Do not attempt to reconstruct the logo from the potentially blurry reference photo. Use the provided [LOGO_OPTION_X] pixels as the ground truth.
-    - **Integration**: Apply the correct perspective distortion, lighting shadows, and material properties (e.g. if the shirt is cotton, the logo should look like fabric print or embroidery; if metal, it should look etched or printed).
-    
-    PRODUCT DNA (Forensic Description):
+    PRODUCT DNA (Verified):
     ${identity}
+    
+    CRITICAL BRANDING RULES (ZERO TOLERANCE):
+    1. **Logo Substitution**: If the product description mentions a logo location, you MUST overlay the provided [LOGO_OPTION_X] at that exact position.
+    2. **Pixel Fidelity**: Do NOT try to generate the text or logo graphics yourself. Use the visual information from [LOGO_OPTION_X] as a texture map. The text spelling and font must match [LOGO_OPTION_X] perfectly.
+    3. **Transparency**: [LOGO_OPTION_X] has a transparent background. Composite it cleanly onto the product surface (fabric/metal/plastic) affecting only the lighting/shading, not the logo shape.
+    
+    CRITICAL GEOMETRY RULES:
+    1. **Shape Preservation**: The product's silhouette must match [Global View] references exactly. Do not hallucinate new buttons, seams, or changes in aspect ratio.
+    2. **Material Accuracy**: Ensure the material defined in PRODUCT DNA (e.g. Cotton, Aluminum) is rendered with physically correct roughness and reflections.
     
     SCENE SETTING:
     ${scenePrompt}
